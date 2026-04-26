@@ -8,7 +8,6 @@ duration, runtime, cc-version).
 import json
 import os
 import sys
-from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, 'lib'))
@@ -16,6 +15,7 @@ sys.path.insert(0, os.path.join(_HERE, 'lib'))
 from colors import THEMES, paint  # noqa: E402
 from config import load_config  # noqa: E402
 from segments import render_segment  # noqa: E402
+from state import DATA_DIR  # noqa: E402
 
 
 def _maybe_dump(raw):
@@ -24,9 +24,8 @@ def _maybe_dump(raw):
     if not os.environ.get('CC_VITALS_DUMP'):
         return
     try:
-        d = Path.home() / '.claude' / 'plugin-data' / 'cc-vitals'
-        d.mkdir(parents=True, exist_ok=True)
-        (d / 'last-stdin.json').write_text(raw)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (DATA_DIR / 'last-stdin.json').write_text(raw)
     except OSError:
         pass
 

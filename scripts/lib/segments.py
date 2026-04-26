@@ -321,16 +321,12 @@ def _resolve_distro_icon(distro_id, id_like):
     """Pick the most specific available distro icon, falling back through
     ID_LIKE parents and finally to the generic Linux penguin."""
     nerd = _ICONS.get('nerd', {})
-    candidates = []
-    if distro_id:
-        candidates.append('distro_' + distro_id.replace('-', '_'))
-        candidates.append('distro_' + distro_id)
-    for parent in id_like:
-        candidates.append('distro_' + parent.replace('-', '_'))
-        candidates.append('distro_' + parent)
-    for key in candidates:
-        if key in nerd:
-            return key
+    for src in [distro_id] + list(id_like):
+        if not src:
+            continue
+        for key in {'distro_' + src.replace('-', '_'), 'distro_' + src}:
+            if key in nerd:
+                return key
     return None
 
 
@@ -422,15 +418,10 @@ def render_env(data, config, theme):
     color_override = _colors(config).get('env')
     adaptive = seg.get('adaptive_color', True) and not color_override
 
-    # If we're virtualized AND there's a Linux distro under us, render
-    # "<distro-icon> <Distro Name> (<container-icon> <env>)" — distro in
-    # its brand color, container badge in the virtualization color.
-    distro_id, pretty, id_like = '', '', []
-    if env != 'linux':
-        distro_id, pretty, id_like = get_linux_distro()
+    distro_id, pretty, id_like = get_linux_distro()
     show_host = seg.get('show_container_host', True)
 
-    if (env in _VIRTUAL_ENVS and pretty and show_host and style == 'nerd'):
+    if env in _VIRTUAL_ENVS and pretty and show_host and style == 'nerd':
         distro_icon_key = _resolve_distro_icon(distro_id, id_like)
         distro_icon = _icon(config, distro_icon_key) if distro_icon_key else _icon(config, 'env_linux')
         distro_name = pretty if seg.get('show_distro', True) else (distro_id or 'linux')
@@ -448,13 +439,8 @@ def render_env(data, config, theme):
         host_part = paint(f'({host_icon} {env})', host_col, theme)
         return f'{distro_part} {host_part}'
 
-    # Non-virtualized or no distro info: original single-token render.
     if env == 'linux':
-        distro_id, pretty, id_like = get_linux_distro()
-        if seg.get('show_distro', True) and pretty:
-            label_text = pretty
-        else:
-            label_text = 'linux'
+        label_text = pretty if (seg.get('show_distro', True) and pretty) else 'linux'
         icon_key = _resolve_distro_icon(distro_id, id_like) if style == 'nerd' else None
         icon = _icon(config, icon_key) if icon_key else _icon(config, 'env_linux')
     else:
@@ -526,6 +512,14 @@ def render_cost_avg(data, config, theme):
     return f'{status} {avg_part}' if seg.get('show_avg', True) else status
 
 
+def _context_threshold_color(pct, c):
+    if pct >= 90:
+        return c.get('context.crit', c.get('context.normal'))
+    if pct >= 75:
+        return c.get('context.warn', c.get('context.normal'))
+    return c.get('context.normal')
+
+
 def render_context(data, config, theme):
     cw = data.get('context_window') or {}
     pct_raw = cw.get('used_percentage')
@@ -546,8 +540,7 @@ def render_context(data, config, theme):
         width = int(seg.get('bar_width', 10))
         filled_glyph = seg.get('filled_glyph', '█')  # full block
         empty_glyph = seg.get('empty_glyph', '▒')   # medium shade
-        filled = int(round(frac * width))
-        filled = max(0, min(width, filled))
+        filled = max(0, min(width, int(round(frac * width))))
         bar_col = gradient_hex(frac, theme) or c.get('context.normal')
         empty_col = c.get('context.empty', 'dim')
         bar = (
@@ -555,24 +548,13 @@ def render_context(data, config, theme):
             + paint(empty_glyph * (width - filled), empty_col, theme)
         )
         if style == 'bar':
-            text_part = paint(f' {pct}%', bar_col, theme)
             head = paint(icon + ' ', bar_col, theme) if icon else ''
-            return head + bar + text_part
-        col = c.get('context.normal')
-        if pct >= 90:
-            col = c.get('context.crit', col)
-        elif pct >= 75:
-            col = c.get('context.warn', col)
-        text = paint(f'{icon} {pct}%' if icon else f'{pct}%', col, theme)
+            return head + bar + paint(f' {pct}%', bar_col, theme)
+        text = paint(f'{icon} {pct}%' if icon else f'{pct}%', _context_threshold_color(pct, c), theme)
         return f'{text} {bar}'
 
-    col = c.get('context.normal')
-    if pct >= 90:
-        col = c.get('context.crit', col)
-    elif pct >= 75:
-        col = c.get('context.warn', col)
     label = f'{icon} {pct}%' if icon else f'{pct}%'
-    return paint(label, col, theme)
+    return paint(label, _context_threshold_color(pct, c), theme)
 
 
 def render_limits(data, config, theme):
@@ -908,4 +890,8 @@ def render_segment(name, data, config, theme):
     try:
         return fn(data, config, theme) or ''
     except Exception:
+        # Swallowed by default so a single broken segment can't blank the
+        # whole statusline. Set CC_VITALS_DEBUG=1 to surface the traceback.
+        if os.environ.get('CC_VITALS_DEBUG'):
+            raise
         return ''
