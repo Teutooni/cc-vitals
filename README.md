@@ -130,10 +130,27 @@ OS (`platform.system()`).
 
 ## Debugging
 
-Set `CC_VITALS_DUMP=1` in your environment to write the raw stdin
-JSON Claude Code passes on each render to
-`~/.claude/plugin-data/cc-vitals/last-stdin.json`. Useful for
-checking which fields your Claude Code version actually exposes.
+Three environment variables help when something looks off:
+
+- `CC_VITALS_DEBUG=1` — re-raise exceptions thrown inside a segment renderer
+  instead of swallowing them. Without it, a broken segment renders blank so
+  the rest of the line keeps working.
+- `CC_VITALS_THEME=<name>` — override the configured theme for the current
+  process (e.g. `CC_VITALS_THEME=high-contrast`). Useful for quick
+  comparisons without editing config.
+- `CC_VITALS_DUMP=1` — write the raw stdin JSON Claude Code passes on each
+  render to `~/.claude/plugin-data/cc-vitals/last-stdin.json`. Useful for
+  checking which fields your Claude Code version exposes. Note that the
+  dump may include session-identifying data (transcript path, session id);
+  delete it when you're done debugging.
+
+## Tests
+
+```
+python3 -m unittest discover -s tests
+```
+
+The test suite uses only the standard library — no external dependencies.
 
 ## Uninstall
 

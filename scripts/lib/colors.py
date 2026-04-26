@@ -1,5 +1,6 @@
 """ANSI color helpers and themed palettes."""
 import os
+import re
 
 _NO_COLOR = bool(os.environ.get('NO_COLOR'))
 
@@ -7,16 +8,43 @@ RESET = '' if _NO_COLOR else '\033[0m'
 BOLD = '' if _NO_COLOR else '\033[1m'
 DIM = '' if _NO_COLOR else '\033[2m'
 
+_HEX3_RX = re.compile(r'^#([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])$')
+_HEX6_RX = re.compile(r'^#[0-9a-fA-F]{6}$')
+
+
+def _normalize_hex(value):
+    """Return canonical '#RRGGBB' for a valid hex color, else None.
+
+    Accepts 6-digit and 3-digit shorthand ('#FFF' -> '#FFFFFF'). Anything
+    that isn't a string starting with '#' followed by 3 or 6 hex digits
+    returns None — callers fall back to default colors instead of raising
+    deep in render."""
+    if not isinstance(value, str):
+        return None
+    if _HEX6_RX.match(value):
+        return value.upper()
+    m = _HEX3_RX.match(value)
+    if m:
+        a, b, c = m.groups()
+        return f'#{a}{a}{b}{b}{c}{c}'.upper()
+    return None
+
 
 def _hex_to_rgb(h):
-    h = h.lstrip('#')
+    norm = _normalize_hex(h)
+    if not norm:
+        return None
+    h = norm.lstrip('#')
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
 def _fg(hex_color):
     if _NO_COLOR or not hex_color:
         return ''
-    r, g, b = _hex_to_rgb(hex_color)
+    rgb = _hex_to_rgb(hex_color)
+    if not rgb:
+        return ''
+    r, g, b = rgb
     return f'\033[38;2;{r};{g};{b}m'
 
 
@@ -58,9 +86,12 @@ def resolve_color(token, theme):
     if not token:
         return None
     if isinstance(token, str) and token.startswith('#'):
-        return token
+        return _normalize_hex(token)
     if isinstance(theme, dict):
-        return theme.get(token)
+        val = theme.get(token)
+        if isinstance(val, str) and val.startswith('#'):
+            return _normalize_hex(val)
+        return val
     return None
 
 
@@ -69,10 +100,12 @@ def _lerp(a, b, t):
 
 
 def _mix_hex(hex_a, hex_b, t):
-    ar, ag, ab = _hex_to_rgb(hex_a)
-    br, bg, bb = _hex_to_rgb(hex_b)
+    a = _hex_to_rgb(hex_a)
+    b = _hex_to_rgb(hex_b)
+    if not a or not b:
+        return a and _normalize_hex(hex_a) or b and _normalize_hex(hex_b)
     return '#{:02X}{:02X}{:02X}'.format(
-        _lerp(ar, br, t), _lerp(ag, bg, t), _lerp(ab, bb, t)
+        _lerp(a[0], b[0], t), _lerp(a[1], b[1], t), _lerp(a[2], b[2], t)
     )
 
 

@@ -235,7 +235,9 @@ def render_effort(data, config, theme):
 def render_cwd(data, config, theme):
     cwd = data.get('cwd') or (data.get('workspace') or {}).get('current_dir') or os.getcwd()
     home = os.path.expanduser('~')
-    if cwd.startswith(home):
+    if cwd == home:
+        cwd = '~'
+    elif home and cwd.startswith(home + os.sep):
         cwd = '~' + cwd[len(home):]
     max_len = config.get('segments', {}).get('cwd', {}).get('max_length', 40)
     if len(cwd) > max_len and '/' in cwd:
