@@ -5,7 +5,7 @@ import subprocess
 
 from cache import get_cache_ttl_remaining, get_session_cache_state, DEFAULT_TTL_SECONDS
 from colors import paint, gradient_hex
-from cost import update_and_get, get_projection
+from cost import update_and_get, get_projection, get_month_projection
 from context import get_context_usage
 from env import detect_environment, get_linux_distro
 from git import get_git_info
@@ -480,38 +480,76 @@ def render_cost(data, config, theme):
     return ' '.join(p for p in parts if p)
 
 
-def render_cost_avg(data, config, theme):
-    seg = config.get('segments', {}).get('cost_avg', {})
+def _forecast_config(config, *namespaces):
+    """First non-empty `segments.<ns>` block wins; same precedence for color
+    keys via the returned `col` lookup. Lets new canonical names coexist
+    with the old `cost_avg` config block."""
+    segs = config.get('segments', {})
+    seg = next((segs[n] for n in namespaces if segs.get(n)), {})
+    colors = _colors(config)
+
+    def col(key, default):
+        for ns in namespaces:
+            val = colors.get(f'{ns}.{key}')
+            if val is not None:
+                return val
+        return default
+
+    return seg, col
+
+
+def _ratio_color_arrow(ratio, col):
+    if ratio < 0.85:
+        return col('under', 'success'), '↓'
+    if ratio < 1.00:
+        return col('ok', 'warning'), '→'
+    if ratio < 1.15:
+        return col('warn', '#D97757'), '↑'
+    return col('over', 'error'), '↑'
+
+
+def render_cost_day_forecast(data, config, theme):
+    seg, col = _forecast_config(config, 'cost_day_forecast', 'cost_avg')
     window = int(seg.get('window', 7))
     proj = get_projection(window=window)
-    c = _colors(config)
     if not proj:
-        return paint('—/d', c.get('cost_avg.avg', 'muted'), theme)
-    avg_part = paint(f'${proj["avg"]:.2f}/d', c.get('cost_avg.avg', 'muted'), theme)
+        return paint('—/d', col('avg', 'muted'), theme)
+    avg_part = paint(f'${proj["avg"]:.2f}/d', col('avg', 'muted'), theme)
 
     if not proj['enough'] or proj['ratio'] is None:
         return avg_part
 
-    ratio = proj['ratio']
-    if ratio < 0.85:
-        col = c.get('cost_avg.under', 'success')
-        arrow = '↓'
-    elif ratio < 1.00:
-        col = c.get('cost_avg.ok', 'warning')
-        arrow = '→'
-    elif ratio < 1.15:
-        col = c.get('cost_avg.warn', '#D97757')
-        arrow = '↑'
-    else:
-        col = c.get('cost_avg.over', 'error')
-        arrow = '↑'
-
-    projected = ratio * proj['avg']
+    color, arrow = _ratio_color_arrow(proj['ratio'], col)
+    projected = proj['ratio'] * proj['avg']
     parts = [f'${projected:.2f}']
     if seg.get('show_arrow', True):
         parts.append(arrow)
-    status = paint(' '.join(parts), col, theme)
+    status = paint(' '.join(parts), color, theme)
     return f'{status} {avg_part}' if seg.get('show_avg', True) else status
+
+
+def render_cost_month_forecast(data, config, theme):
+    seg, col = _forecast_config(config, 'cost_month_forecast')
+    window = int(seg.get('window', 7))
+    proj = get_month_projection(window=window)
+    if not proj:
+        return paint('—/mo', col('forecast', 'muted'), theme)
+
+    decimals = int(seg.get('decimals', 0))
+    forecast_str = f'${proj["forecast"]:.{decimals}f}/mo'
+
+    if proj['ratio'] is None or not proj['enough']:
+        return paint(forecast_str, col('forecast', 'muted'), theme)
+
+    color, arrow = _ratio_color_arrow(proj['ratio'], col)
+    parts = [forecast_str]
+    if seg.get('show_arrow', True):
+        parts.append(arrow)
+    status = paint(' '.join(parts), color, theme)
+    if seg.get('show_so_far', False):
+        so_far = paint(f'${proj["month_so_far"]:.2f} so far', col('so_far', 'muted'), theme)
+        return f'{status} {so_far}'
+    return status
 
 
 def _context_threshold_color(pct, c):
@@ -873,7 +911,9 @@ RENDERERS = {
     'git':            render_git,
     'env':            render_env,
     'cost':           render_cost,
-    'cost-avg':       render_cost_avg,
+    'cost-day-forecast': render_cost_day_forecast,
+    'cost-month-forecast': render_cost_month_forecast,
+    'cost-avg':       render_cost_day_forecast,  # legacy alias
     'context':        render_context,
     'limits':         render_limits,
     'tokens':         render_tokens,

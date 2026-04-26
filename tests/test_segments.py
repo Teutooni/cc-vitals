@@ -204,6 +204,78 @@ class RenderDuration(unittest.TestCase):
         self.assertIn('1h01m', out)
 
 
+class CostForecastSegments(unittest.TestCase):
+    """Renderers consult cost data, so swap in a temp store and stub the
+    projection helpers with deterministic shapes."""
+
+    def setUp(self):
+        self.theme = {
+            'primary': '#FFFFFF', 'muted': '#888888', 'success': '#0F0',
+            'warning': '#FF0', 'error': '#F00',
+        }
+        self.cfg = {
+            'colors': {
+                'cost_day_forecast.avg': 'muted', 'cost_day_forecast.over': 'error',
+                'cost_month_forecast.forecast': 'muted',
+                'cost_month_forecast.over': 'error',
+            },
+            'icons': 'ascii',
+            'segments': {
+                'cost_day_forecast': {'window': 7, 'show_arrow': True, 'show_avg': True},
+                'cost_month_forecast': {'window': 7, 'show_arrow': True, 'decimals': 0},
+            },
+        }
+
+    def test_day_forecast_no_history_renders_dash(self):
+        with mock.patch.object(segments, 'get_projection', return_value=None):
+            out = segments.render_cost_day_forecast({}, self.cfg, self.theme)
+        self.assertIn('—/d', out)
+
+    def test_day_forecast_with_pace_includes_arrow(self):
+        proj = {'avg': 2.0, 'today_so_far': 4.0, 'expected_by_now': 1.0,
+                'ratio': 1.5, 'enough': True,
+                'days_sampled': 5, 'hour_days_sampled': 5}
+        with mock.patch.object(segments, 'get_projection', return_value=proj):
+            out = segments.render_cost_day_forecast({}, self.cfg, self.theme)
+        self.assertIn('$3.00', out)  # 1.5 × 2.0
+        self.assertIn('↑', out)
+        self.assertIn('$2.00/d', out)
+
+    def test_month_forecast_no_history_renders_dash(self):
+        with mock.patch.object(segments, 'get_month_projection', return_value=None):
+            out = segments.render_cost_month_forecast({}, self.cfg, self.theme)
+        self.assertIn('—/mo', out)
+
+    def test_month_forecast_renders_dollar_amount(self):
+        proj = {'forecast': 137.4, 'month_so_far': 50.0, 'avg_daily': 4.0,
+                'days_in_month': 30, 'day_of_month': 10, 'days_remaining': 20,
+                'ratio': 1.2, 'enough': True}
+        with mock.patch.object(segments, 'get_month_projection', return_value=proj):
+            out = segments.render_cost_month_forecast({}, self.cfg, self.theme)
+        self.assertIn('$137/mo', out)  # decimals=0
+        self.assertIn('↑', out)
+
+    def test_legacy_cost_avg_alias_routes_to_day_forecast(self):
+        self.assertIs(
+            segments.RENDERERS['cost-avg'],
+            segments.RENDERERS['cost-day-forecast'],
+        )
+
+    def test_legacy_cost_avg_config_block_still_honored(self):
+        cfg = {
+            'colors': {'cost_avg.avg': '#ABCDEF'},
+            'icons': 'ascii',
+            'segments': {'cost_avg': {'window': 14, 'show_arrow': False, 'show_avg': True}},
+        }
+        captured = {}
+        def fake_proj(window):
+            captured['window'] = window
+            return None
+        with mock.patch.object(segments, 'get_projection', side_effect=fake_proj):
+            segments.render_cost_day_forecast({}, cfg, self.theme)
+        self.assertEqual(captured['window'], 14)
+
+
 class RenderSegmentSwallowsErrors(unittest.TestCase):
     def test_unknown_segment_returns_empty(self):
         self.assertEqual(segments.render_segment('nonexistent', {}, {}, {}), '')

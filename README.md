@@ -9,11 +9,13 @@ VS Code Dark Modern palette by default.
 
 - **Themeable colors** — ships with `vs-dark-modern`, `high-contrast`, and
   `claude-default` palettes. Custom palettes supported.
-- **Segments**: `model`, `effort`, `cwd`, `git`, `env`, `cost`, `cost-avg`,
-  `context`, `limits`, `tokens`, `tokens-session`, `cache`, `duration`,
-  `runtime`, `cc-version`. Each can be enabled, reordered, or split across
-  multiple lines. `runtime` shells out to `node`/`python3`/`rustc`/etc. on
-  every render (bounded at 0.5s each) — leave it off unless wanted.
+- **Segments**: `model`, `effort`, `cwd`, `git`, `env`, `cost`,
+  `cost-day-forecast`, `cost-month-forecast`, `context`, `limits`, `tokens`,
+  `tokens-session`, `cache`, `duration`, `runtime`, `cc-version`. Each can
+  be enabled, reordered, or split across multiple lines. `runtime` shells
+  out to `node`/`python3`/`rustc`/etc. on every render (bounded at 0.5s
+  each) — leave it off unless wanted. (`cost-avg` is kept as an alias for
+  `cost-day-forecast`.)
 - **Multi-line layout** — configure any number of lines via `lines` array.
 - **Nerd Font icons with ASCII fallback** — one config flag flips all icons.
 - **Rolling cost tracking** — session cost from Claude Code, daily and
@@ -121,6 +123,18 @@ Override any token with a hex color:
   double-counts.
 - Rolls over at local-time midnight (daily) / start of calendar month.
 - Data pruned to last 90 days / 24 months / 200 sessions automatically.
+
+### Forecast segments (pay-per-token planning)
+
+- `cost-day-forecast` — `$X/d ↑ $Y/d`: today's projected total based on
+  pace versus typical hourly progress, alongside the rolling daily average.
+  Renamed from `cost-avg` (the old name still works).
+- `cost-month-forecast` — `$X/mo`: month-to-date plus rolling daily
+  average × days remaining. Color-coded by month-to-date pace versus
+  typical. Useful for predicting your monthly bill on metered plans.
+
+Both default to a 7-day window for the rolling average; tune via
+`segments.cost_day_forecast.window` / `segments.cost_month_forecast.window`.
 
 ## Environment Detection
 

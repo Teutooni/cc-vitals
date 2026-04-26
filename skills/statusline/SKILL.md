@@ -216,8 +216,9 @@ Custom theme palettes must define: `primary`, `secondary`, `accent`, `muted`,
 (`"accent"`) or hex strings (`"#D97757"`).
 
 Available segments: `model`, `effort`, `cwd`, `git`, `env`, `cost`,
-`cost-avg`, `context`, `limits`, `tokens`, `tokens-session`, `cache`,
-`duration`, `runtime`, `cc-version`.
+`cost-day-forecast`, `cost-month-forecast`, `context`, `limits`, `tokens`,
+`tokens-session`, `cache`, `duration`, `runtime`, `cc-version`.
+(`cost-avg` is a legacy alias for `cost-day-forecast`.)
 
 The `cache` segment shows a TTL countdown for Anthropic's 5-minute prompt
 cache. Without `refreshInterval` set in `~/.claude/settings.json`, the TTL

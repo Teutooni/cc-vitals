@@ -1,4 +1,5 @@
 """Persistent cost aggregation: session + daily (with hourly buckets) + monthly totals."""
+from calendar import monthrange
 from datetime import datetime
 
 from state import (
@@ -140,4 +141,50 @@ def get_projection(window=7, min_expected=0.05, min_days=3):
         'enough': enough,
         'days_sampled': len(past_keys),
         'hour_days_sampled': len(past_with_hours),
+    }
+
+
+def get_month_projection(window=7):
+    """Project the calendar-month total from month-to-date plus a rolling
+    daily average for the days remaining.
+
+    `forecast = month_so_far + avg_daily * days_remaining` (today's partial
+    spend is already inside `month_so_far`; we don't double-count the
+    remainder of today).
+
+    `ratio` compares month-to-date against what you'd typically have spent
+    by this point in the month — full historical days for the prior days,
+    plus today's hourly cumulative — so it's directly comparable to the
+    same-named field on `get_projection`.
+
+    Returns None if there's no usable history for an avg.
+    """
+    proj = get_projection(window=window)
+    if not proj:
+        return None
+
+    now = datetime.now()
+    month_key = now.strftime('%Y-%m')
+    days_in_month = monthrange(now.year, now.month)[1]
+    day_of_month = now.day
+    days_remaining = max(0, days_in_month - day_of_month)
+
+    months = _load().get('months', {})
+    month_so_far = float(months.get(month_key, 0.0) or 0.0)
+
+    avg = proj['avg']
+    forecast = month_so_far + avg * days_remaining
+
+    expected_to_date = avg * (day_of_month - 1) + (proj.get('expected_by_now') or 0.0)
+    ratio = month_so_far / expected_to_date if expected_to_date > 0 else None
+
+    return {
+        'forecast': forecast,
+        'month_so_far': month_so_far,
+        'avg_daily': avg,
+        'days_in_month': days_in_month,
+        'day_of_month': day_of_month,
+        'days_remaining': days_remaining,
+        'ratio': ratio,
+        'enough': proj.get('enough', False),
     }
