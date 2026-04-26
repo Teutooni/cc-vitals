@@ -3,6 +3,7 @@ import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
 import tests  # noqa: F401
 import git
@@ -25,6 +26,23 @@ def _git_available():
         return True
     except (FileNotFoundError, subprocess.CalledProcessError):
         return False
+
+
+class RunUsesNoOptionalLocks(unittest.TestCase):
+    """Pin the flag so a future refactor doesn't silently re-introduce the
+    statusline-vs-commit race for `.git/index.lock`."""
+    def test_no_optional_locks_passed_to_subprocess(self):
+        fake = mock.Mock()
+        fake.returncode = 0
+        fake.stdout = 'main\n'
+        with mock.patch.object(git.subprocess, 'run', return_value=fake) as run:
+            git._run(['status', '--porcelain=v2'], '/tmp')
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[0], 'git')
+        self.assertIn('--no-optional-locks', argv)
+        # The flag must come before the subcommand — git only accepts it
+        # as a top-level option.
+        self.assertLess(argv.index('--no-optional-locks'), argv.index('status'))
 
 
 @unittest.skipUnless(_git_available(), 'git not installed')

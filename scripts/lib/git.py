@@ -5,9 +5,15 @@ import subprocess
 
 
 def _run(args, cwd, timeout=0.25):
+    # `--no-optional-locks` keeps read-only commands like `status` from
+    # racing for `.git/index.lock` against a concurrent `commit` /
+    # `add` the user is running in the same repo. The statusline renders
+    # every second on `refreshInterval: 1`, so without this flag any
+    # interactive git operation has a non-trivial chance of failing
+    # with "Unable to create index.lock: File exists".
     try:
         r = subprocess.run(
-            ['git'] + args,
+            ['git', '--no-optional-locks'] + args,
             cwd=cwd, capture_output=True, text=True, timeout=timeout
         )
         if r.returncode == 0:
