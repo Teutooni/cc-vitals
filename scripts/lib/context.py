@@ -1,6 +1,5 @@
 """Context window usage estimator from transcript file."""
 import json
-from pathlib import Path
 
 _TAIL_BYTES = 262144  # 256 KiB
 
@@ -18,12 +17,8 @@ def get_context_usage(transcript_path, model_id=None):
     """Return fraction 0..1 of context window used, or None if unknown."""
     if not transcript_path:
         return None
-    p = Path(transcript_path)
-    if not p.exists():
-        return None
-
     try:
-        with open(p, 'rb') as f:
+        with open(transcript_path, 'rb') as f:
             f.seek(0, 2)
             size = f.tell()
             f.seek(max(0, size - _TAIL_BYTES))

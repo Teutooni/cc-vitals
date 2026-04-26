@@ -64,57 +64,64 @@ def _detect_op_state(cwd, git_dir):
 def get_git_info(cwd):
     if not cwd:
         return None
-    inside = _run(['rev-parse', '--is-inside-work-tree'], cwd)
-    if inside != 'true':
-        return None
 
-    branch = _run(['symbolic-ref', '--short', 'HEAD'], cwd)
-    if branch is None:
-        sha = _run(['rev-parse', '--short', 'HEAD'], cwd)
-        branch = f'({sha})' if sha else '(detached)'
-
+    # Single porcelain v2 call gives us branch.head, branch.upstream, branch.ab,
+    # and per-file status — replacing separate `is-inside-work-tree` and
+    # `symbolic-ref` calls. `--show-toplevel` mode would also work but the
+    # branch headers are what we need anyway.
     status = _run(
         ['status', '--porcelain=v2', '--branch', '--untracked-files=all'],
         cwd, timeout=0.4,
     )
+    if status is None:
+        return None
+
+    branch = None
+    head_oid = None
     ahead = 0
     behind = 0
     has_upstream = False
     added = modified = deleted = renamed = untracked = 0
 
-    if status:
-        for line in status.splitlines():
-            if line.startswith('# branch.ab '):
-                parts = line.split()
-                try:
-                    ahead = abs(int(parts[2]))
-                    behind = abs(int(parts[3]))
-                except (ValueError, IndexError):
-                    pass
-            elif line.startswith('# branch.upstream '):
-                has_upstream = True
-            elif line.startswith('? '):
-                untracked += 1
-            elif line.startswith('2 '):
-                renamed += 1
-            elif line.startswith('1 ') and len(line) >= 4:
-                # "1 XY ..." — X = staged vs HEAD, Y = worktree vs index.
-                # Classify by priority: deleted > added > modified (ignore '.').
-                xy = line[2:4]
-                if 'D' in xy:
-                    deleted += 1
-                elif 'A' in xy:
-                    added += 1
-                elif 'M' in xy or 'T' in xy:
-                    modified += 1
-            elif line.startswith('u '):
+    for line in status.splitlines():
+        if line.startswith('# branch.head '):
+            branch = line[len('# branch.head '):].strip()
+        elif line.startswith('# branch.oid '):
+            head_oid = line[len('# branch.oid '):].strip()
+        elif line.startswith('# branch.upstream '):
+            has_upstream = True
+        elif line.startswith('# branch.ab '):
+            parts = line.split()
+            try:
+                ahead = abs(int(parts[2]))
+                behind = abs(int(parts[3]))
+            except (ValueError, IndexError):
+                pass
+        elif line.startswith('? '):
+            untracked += 1
+        elif line.startswith('2 '):
+            renamed += 1
+        elif line.startswith('1 ') and len(line) >= 4:
+            # "1 XY ..." — X = staged vs HEAD, Y = worktree vs index.
+            # Classify by priority: deleted > added > modified (ignore '.').
+            xy = line[2:4]
+            if 'D' in xy:
+                deleted += 1
+            elif 'A' in xy:
+                added += 1
+            elif 'M' in xy or 'T' in xy:
                 modified += 1
+        elif line.startswith('u '):
+            modified += 1
+
+    if branch == '(detached)':
+        branch = f'({head_oid[:7]})' if head_oid else '(detached)'
 
     git_dir = _run(['rev-parse', '--git-dir'], cwd)
     op_state = _detect_op_state(cwd, git_dir)
 
     return {
-        'branch': branch,
+        'branch': branch or '(unknown)',
         'ahead': ahead,
         'behind': behind,
         'upstream': has_upstream,

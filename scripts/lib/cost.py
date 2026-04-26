@@ -1,36 +1,33 @@
 """Persistent cost aggregation: session + daily (with hourly buckets) + monthly totals."""
-import json
-import os
 from datetime import datetime
-from pathlib import Path
 
-DATA_DIR = Path.home() / '.claude' / 'plugin-data' / 'cc-vitals'
+from state import (
+    DATA_DIR,
+    MAX_SESSIONS,
+    load_json,
+    prune_sessions_lru,
+    save_json_atomic,
+)
+
 COSTS_FILE = DATA_DIR / 'costs.json'
 
-_MAX_SESSIONS = 200
 _MAX_DAYS = 90
 _MAX_MONTHS = 24
 
+# A fresh process per statusline render, so this cache is effectively per-render
+# — it lets update_and_get and get_projection share one disk read.
+_DATA_CACHE = None
+
 
 def _load():
-    if not COSTS_FILE.exists():
-        return {}
-    try:
-        with open(COSTS_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+    global _DATA_CACHE
+    if _DATA_CACHE is None:
+        _DATA_CACHE = load_json(COSTS_FILE) or {}
+    return _DATA_CACHE
 
 
 def _save(data):
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = COSTS_FILE.with_suffix('.tmp')
-        with open(tmp, 'w') as f:
-            json.dump(data, f)
-        os.replace(tmp, COSTS_FILE)
-    except OSError:
-        pass
+    save_json_atomic(COSTS_FILE, data)
 
 
 def _normalize_day(v):
@@ -53,10 +50,7 @@ def _prune(data):
     if len(months) > _MAX_MONTHS:
         for k in sorted(months)[:-_MAX_MONTHS]:
             del months[k]
-    if len(sessions) > _MAX_SESSIONS:
-        ordered = sorted(sessions.items(), key=lambda kv: kv[1].get('last_seen', ''))
-        for k, _ in ordered[:-_MAX_SESSIONS]:
-            del sessions[k]
+    prune_sessions_lru(sessions, MAX_SESSIONS, key='last_seen')
 
 
 def update_and_get(session_id, session_cost):
@@ -73,30 +67,31 @@ def update_and_get(session_id, session_cost):
     days = data.setdefault('days', {})
     months = data.setdefault('months', {})
 
-    for k in list(days.keys()):
-        days[k] = _normalize_day(days[k])
+    prev_entry = sessions.get(session_id, {})
+    prev = float(prev_entry.get('last_cost', 0.0))
+    delta = max(0.0, float(session_cost) - prev)
 
-    prev = sessions.get(session_id, {}).get('last_cost', 0.0)
-    delta = max(0.0, float(session_cost) - float(prev))
-
-    day = days.setdefault(day_key, {'total': 0.0, 'hours': {}})
+    raw_today = days.get(day_key)
+    day = _normalize_day(raw_today) if raw_today is not None else {'total': 0.0, 'hours': {}}
     if delta:
         day['total'] += delta
         day['hours'][hour] = day['hours'].get(hour, 0.0) + delta
-        months[month_key] = months.get(month_key, 0.0) + delta
+        # months entries are bare floats; coerce in case of legacy ints/strings.
+        months[month_key] = float(months.get(month_key, 0.0) or 0.0) + delta
+        days[day_key] = day
 
-    sessions[session_id] = {
-        'last_cost': float(session_cost),
-        'last_seen': now.isoformat(timespec='seconds'),
-    }
-
-    _prune(data)
-    _save(data)
+    if delta or prev_entry.get('last_cost') != float(session_cost):
+        sessions[session_id] = {
+            'last_cost': float(session_cost),
+            'last_seen': now.isoformat(timespec='seconds'),
+        }
+        _prune(data)
+        _save(data)
 
     return (
         float(session_cost),
         float(day.get('total', 0.0)),
-        float(months.get(month_key, 0.0)),
+        float(months.get(month_key, 0.0) or 0.0),
     )
 
 
@@ -113,16 +108,15 @@ def get_projection(window=7, min_expected=0.05, min_days=3):
     today_key = now.strftime('%Y-%m-%d')
     current_hour = now.hour
 
-    data = _load()
-    days = {k: _normalize_day(v) for k, v in data.get('days', {}).items()}
-
-    past_keys = sorted(k for k in days if k < today_key)[-window:]
+    raw_days = _load().get('days', {})
+    past_keys = sorted(k for k in raw_days if k < today_key)[-window:]
     if not past_keys:
         return None
 
-    avg = sum(days[k]['total'] for k in past_keys) / len(past_keys)
+    past = {k: _normalize_day(raw_days[k]) for k in past_keys}
+    avg = sum(past[k]['total'] for k in past_keys) / len(past_keys)
 
-    past_with_hours = [days[k] for k in past_keys if days[k]['hours']]
+    past_with_hours = [past[k] for k in past_keys if past[k]['hours']]
     if past_with_hours:
         cum = [
             sum(v for h, v in d['hours'].items() if h <= current_hour)
@@ -132,8 +126,8 @@ def get_projection(window=7, min_expected=0.05, min_days=3):
     else:
         expected_by_now = 0.0
 
-    today = days.get(today_key)
-    today_so_far = today['total'] if today else 0.0
+    today_raw = raw_days.get(today_key)
+    today_so_far = _normalize_day(today_raw)['total'] if today_raw is not None else 0.0
 
     enough = len(past_with_hours) >= min_days and expected_by_now >= min_expected
     ratio = today_so_far / expected_by_now if expected_by_now > 0 else None

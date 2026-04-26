@@ -26,13 +26,11 @@ def load_default_config():
 
 def load_config():
     config = load_default_config()
-    if USER_CONFIG_PATH.exists():
-        try:
-            with open(USER_CONFIG_PATH) as f:
-                user = json.load(f)
-            config = _deep_merge(config, user)
-        except (json.JSONDecodeError, OSError):
-            pass
+    try:
+        with open(USER_CONFIG_PATH) as f:
+            config = _deep_merge(config, json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
     env_theme = os.environ.get('CC_VITALS_THEME')
     if env_theme:
         config['theme'] = env_theme

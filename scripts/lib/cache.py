@@ -15,9 +15,16 @@ To keep parsing cheap with `refreshInterval: 1`, we persist
 (file_size_old → file_size_new) on each render.
 """
 import json
-import os
 import time
 from pathlib import Path
+
+from state import (
+    DATA_DIR,
+    MAX_SESSIONS,
+    load_json,
+    prune_sessions_lru,
+    save_json_atomic,
+)
 
 
 # Claude Code currently writes to the 1-hour ephemeral cache tier. The 5-min
@@ -25,21 +32,19 @@ from pathlib import Path
 # back to this default.
 DEFAULT_TTL_SECONDS = 3600
 
-DATA_DIR = Path.home() / '.claude' / 'plugin-data' / 'cc-vitals'
 STATE_FILE = DATA_DIR / 'cache-state.json'
 
-_MAX_SESSIONS = 200
+# Idle ticks (no new transcript bytes) skip the rewrite, but bump last_seen
+# at least this often so LRU pruning doesn't evict an active session.
+_IDLE_TOUCH_SECONDS = 300
 
 
 def get_cache_age_seconds(transcript_path):
     """Seconds since the transcript was last written, or None if unavailable."""
     if not transcript_path:
         return None
-    p = Path(transcript_path)
-    if not p.exists():
-        return None
     try:
-        mtime = p.stat().st_mtime
+        mtime = Path(transcript_path).stat().st_mtime
     except OSError:
         return None
     return max(0.0, time.time() - mtime)
@@ -51,35 +56,6 @@ def get_cache_ttl_remaining(transcript_path, ttl_seconds=DEFAULT_TTL_SECONDS):
     if age is None:
         return None
     return ttl_seconds - age
-
-
-def _load_state():
-    if not STATE_FILE.exists():
-        return {}
-    try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
-
-
-def _save_state(state):
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = STATE_FILE.with_suffix('.tmp')
-        with open(tmp, 'w') as f:
-            json.dump(state, f)
-        os.replace(tmp, STATE_FILE)
-    except OSError:
-        pass
-
-
-def _prune(state):
-    sessions = state.get('sessions', {})
-    if len(sessions) > _MAX_SESSIONS:
-        ordered = sorted(sessions.items(), key=lambda kv: kv[1].get('last_seen', 0))
-        for k, _ in ordered[:-_MAX_SESSIONS]:
-            del sessions[k]
 
 
 def _scan_chunk(text, seen_ids):
@@ -135,14 +111,12 @@ def get_session_cache_state(transcript_path, session_id):
     if not transcript_path or not session_id:
         return None
     p = Path(transcript_path)
-    if not p.exists():
-        return None
     try:
         size = p.stat().st_size
     except OSError:
         return None
 
-    state = _load_state()
+    state = load_json(STATE_FILE) or {}
     sessions = state.setdefault('sessions', {})
     entry = sessions.get(session_id) or {}
     cached_size = int(entry.get('file_size') or 0)
@@ -152,6 +126,7 @@ def get_session_cache_state(transcript_path, session_id):
     })
     seen_ids = set(entry.get('seen_ids') or [])
     tier_acc = {'latest': entry.get('tier')}
+    last_seen = int(entry.get('last_seen') or 0)
 
     if size < cached_size:
         # Transcript shrunk (rotated/replaced) — recompute from scratch.
@@ -174,18 +149,22 @@ def get_session_cache_state(transcript_path, session_id):
             for _msg_id, usage in _scan_chunk(new_bytes, seen_ids):
                 _accumulate(totals, usage, tier_acc)
 
-    sessions[session_id] = {
-        'file_size': size,
-        'totals': {k: int(totals[k]) for k in _EMPTY_TOTALS},
-        'tier': tier_acc['latest'],
-        # Cap stored ids to keep state file from growing unbounded on huge
-        # sessions. 5000 covers a very long session; older ids can fall off
-        # because we only need them for dedup of the new tail.
-        'seen_ids': list(seen_ids)[-5000:],
-        'last_seen': int(time.time()),
-    }
-    _prune(state)
-    _save_state(state)
+    out_totals = {k: int(totals[k]) for k in _EMPTY_TOTALS}
+    now = int(time.time())
+    changed = size != cached_size
+    if changed or now - last_seen >= _IDLE_TOUCH_SECONDS:
+        sessions[session_id] = {
+            'file_size': size,
+            'totals': out_totals,
+            'tier': tier_acc['latest'],
+            # Cap stored ids to keep state file from growing unbounded on huge
+            # sessions. 5000 covers a very long session; older ids can fall off
+            # because we only need them for dedup of the new tail.
+            'seen_ids': list(seen_ids)[-5000:],
+            'last_seen': now,
+        }
+        prune_sessions_lru(sessions, MAX_SESSIONS, key='last_seen')
+        save_json_atomic(STATE_FILE, state)
 
     tier_seconds = None
     if tier_acc['latest'] == '1h':
@@ -194,6 +173,6 @@ def get_session_cache_state(transcript_path, session_id):
         tier_seconds = 300
 
     return {
-        'totals': {k: int(totals[k]) for k in _EMPTY_TOTALS},
+        'totals': out_totals,
         'tier_seconds': tier_seconds,
     }
