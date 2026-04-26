@@ -1,0 +1,63 @@
+"""Per-model pricing constants for prompt-cache cost estimates.
+
+Prices are USD per million tokens. Update when Anthropic changes prices or
+releases new models. Match is longest-prefix-first against `model.id`.
+
+The standard Anthropic ratios are:
+- cache_read     = 10%  of input
+- cache_write_5m = 125% of input
+- cache_write_1h = 200% of input
+"""
+
+PRICING = {
+    'claude-opus-4': {
+        'input':          15.0,
+        'output':         75.0,
+        'cache_read':      1.5,
+        'cache_write_5m': 18.75,
+        'cache_write_1h': 30.0,
+    },
+    'claude-sonnet-4': {
+        'input':           3.0,
+        'output':         15.0,
+        'cache_read':      0.30,
+        'cache_write_5m':  3.75,
+        'cache_write_1h':  6.0,
+    },
+    'claude-haiku-4': {
+        'input':           1.0,
+        'output':          5.0,
+        'cache_read':      0.10,
+        'cache_write_5m':  1.25,
+        'cache_write_1h':  2.0,
+    },
+}
+
+# Sonnet-tier as the safe middle when a model isn't recognized.
+_DEFAULT = PRICING['claude-sonnet-4']
+
+
+def lookup(model_id):
+    """Return a pricing dict for `model_id`, falling back to Sonnet-tier."""
+    if not model_id:
+        return _DEFAULT
+    mid = model_id.lower()
+    for prefix in sorted(PRICING.keys(), key=len, reverse=True):
+        if mid.startswith(prefix):
+            return PRICING[prefix]
+    return _DEFAULT
+
+
+def at_risk_cost(cache_read_tokens, model_id, ttl='5m'):
+    """Estimated extra cost on the next request if the prompt cache expires.
+
+    Cache hit:  next request pays cache_read_price for those tokens.
+    Cache miss: next request pays input_price + cache_write_price (rebuild).
+    Difference per token = input + cache_write - cache_read.
+    """
+    if not cache_read_tokens or cache_read_tokens <= 0:
+        return 0.0
+    p = lookup(model_id)
+    write_key = 'cache_write_1h' if ttl == '1h' else 'cache_write_5m'
+    delta_per_mtok = p['input'] + p[write_key] - p['cache_read']
+    return cache_read_tokens * delta_per_mtok / 1_000_000
