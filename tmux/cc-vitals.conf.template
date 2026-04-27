@@ -29,8 +29,24 @@ set -g status-format[1] "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{ses
 set -g status-format[2] "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}' 1)"
 
 # Truecolor support — required for the configured palette to render at
-# full fidelity. Comment out if your outer terminal doesn't advertise RGB.
-set -as terminal-features ",*:RGB"
+# full fidelity. Three lines are load-bearing:
+#   1. `default-terminal` sets the *baseline* terminfo for inside the
+#      pane. tmux's 3.2 default is `screen` (8 colors!), and no number
+#      of overrides will promote 8-color to RGB. `tmux-256color` is the
+#      normal 256-color baseline that the overrides below can extend.
+#   2. `:RGB` is the modern (tmux 3.2+) terminal feature flag.
+#   3. `:Tc` is the older capability override; some setups honor one
+#      and not the other. Belt-and-suspenders.
+# Comment out all three if your outer terminal doesn't advertise RGB.
+set -g  default-terminal   "tmux-256color"
+set -as terminal-features  ",*:RGB"
+set -ga terminal-overrides ",*:Tc"
+
+# Mouse mode: wheel-up auto-enters copy-mode for scrollback so the chat
+# history scrolls like it does outside tmux. `q` or wheel-down exits.
+# Without this, Up Arrow goes straight to CC and recalls previous
+# prompts instead of scrolling the visible transcript.
+set -g mouse on
 
 # Alternative single-row layout: drop `set -g status 3` and both
 # `status-format[N]` lines above, then uncomment this to merge cc-vitals'

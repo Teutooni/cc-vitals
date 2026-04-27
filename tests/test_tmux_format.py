@@ -23,23 +23,37 @@ class AnsiToTmux(unittest.TestCase):
                          '#[dim]...#[default]')
 
     def test_truecolor_fg(self):
-        # 0xD4A464 = 212,164,100
+        # 0xD4A464 = 212,164,100. The leading `##` is required because
+        # tmux re-parses our output through `#(…)` and a single `#`
+        # followed by a directive letter (e.g. `#D`) would expand
+        # mid-color and silently drop the fg.
         self.assertEqual(
             ansi_to_tmux('\x1b[38;2;212;164;100mwarn\x1b[0m'),
-            '#[fg=#D4A464]warn#[default]',
+            '#[fg=##D4A464]warn#[default]',
         )
 
     def test_combined_bold_then_color(self):
         self.assertEqual(
             ansi_to_tmux('\x1b[1m\x1b[38;2;255;0;0mERR\x1b[0m'),
-            '#[bold]#[fg=#FF0000]ERR#[default]',
+            '#[bold]#[fg=##FF0000]ERR#[default]',
         )
 
     def test_hex_uppercase(self):
         # ensure low values still emit zero-padded uppercase hex
         self.assertEqual(
             ansi_to_tmux('\x1b[38;2;1;2;3mx\x1b[0m'),
-            '#[fg=#010203]x#[default]',
+            '#[fg=##010203]x#[default]',
+        )
+
+    def test_warning_yellow_collides_with_pane_id_directive(self):
+        # Regression: `#DCDCAA` starts with `#D`, a tmux format directive
+        # that expands to pane_id. Without the `##` escape, tmux re-parses
+        # `#[fg=#DCDCAA]` as `#[fg=<pane_id>CDCAA]`, drops the invalid
+        # color, and the text inherits the previous fg. Same trap for
+        # `#F…` (pane flags) and a few other letters.
+        self.assertEqual(
+            ansi_to_tmux('\x1b[38;2;220;220;170m+75K\x1b[0m'),
+            '#[fg=##DCDCAA]+75K#[default]',
         )
 
     def test_literal_hash_doubled(self):
@@ -79,9 +93,9 @@ class AnsiToTmux(unittest.TestCase):
             '\x1b[38;2;204;204;204m~/proj\x1b[0m'
         )
         out = ansi_to_tmux(rendered)
-        self.assertIn('#[fg=#569CD6]Claude#[default]', out)
+        self.assertIn('#[fg=##569CD6]Claude#[default]', out)
         self.assertIn('#[dim] │ #[default]', out)
-        self.assertIn('#[fg=#CCCCCC]~/proj#[default]', out)
+        self.assertIn('#[fg=##CCCCCC]~/proj#[default]', out)
 
 
 if __name__ == '__main__':
