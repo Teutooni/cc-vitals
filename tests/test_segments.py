@@ -329,6 +329,22 @@ class RenderCwd(unittest.TestCase):
         )
         self.assertIn('…', out)
 
+    def test_basename_only_strips_path(self):
+        cfg = {**self.cfg, 'segments': {'cwd': {'basename_only': True}}}
+        out = segments.render_cwd(
+            {'cwd': '/very/long/path/that/goes/forever/here'},
+            cfg, self.theme,
+        )
+        self.assertIn('here', out)
+        self.assertNotIn('forever', out)
+        self.assertNotIn('…', out)
+
+    def test_basename_only_keeps_tilde_for_home(self):
+        home = os.path.expanduser('~')
+        cfg = {**self.cfg, 'segments': {'cwd': {'basename_only': True}}}
+        out = segments.render_cwd({'cwd': home}, cfg, self.theme)
+        self.assertIn('~', out)
+
 
 class RenderDuration(unittest.TestCase):
     def test_seconds_only(self):

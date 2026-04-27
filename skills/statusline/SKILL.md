@@ -202,7 +202,7 @@ Then run the corresponding flow. Cap interaction at two rounds — advise
   "separator": " │ ",
   "lines": [ ["model","cwd","git"], ["env","cost","context"] ],
   "segments": {
-    "cwd":  { "max_length": 40, "icon": "..." },
+    "cwd":  { "max_length": 40, "basename_only": false, "icon": "..." },
     "git":  { "dirty_glyph": "●", "ahead_glyph": "↑", "behind_glyph": "↓" },
     "cost": { "show_session": true, "show_day": true, "show_month": true }
   },

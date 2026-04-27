@@ -245,11 +245,15 @@ def render_cwd(data, config, theme):
         cwd = '~'
     elif home and cwd.startswith(home + os.sep):
         cwd = '~' + cwd[len(home):]
-    max_len = config.get('segments', {}).get('cwd', {}).get('max_length', 40)
-    if len(cwd) > max_len and '/' in cwd:
-        parts = cwd.split('/')
-        if len(parts) > 3:
-            cwd = '/'.join([parts[0] or '', '…'] + parts[-2:])
+    cfg = config.get('segments', {}).get('cwd', {})
+    if cfg.get('basename_only'):
+        cwd = os.path.basename(cwd.rstrip('/')) or cwd
+    else:
+        max_len = cfg.get('max_length', 40)
+        if len(cwd) > max_len and '/' in cwd:
+            parts = cwd.split('/')
+            if len(parts) > 3:
+                cwd = '/'.join([parts[0] or '', '…'] + parts[-2:])
     icon = _icon(config, 'cwd')
     label = f'{icon} {cwd}' if icon else cwd
     return paint(label, _colors(config).get('cwd'), theme)
