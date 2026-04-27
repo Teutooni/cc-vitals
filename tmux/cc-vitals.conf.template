@@ -1,0 +1,27 @@
+# cc-vitals tmux config — generated from template at install time.
+# `__PLUGIN_ROOT__` was substituted with the absolute plugin path; do not
+# edit this file by hand. Re-run `/statusline mode tmux` to regenerate.
+#
+# Source this from your ~/.tmux.conf:
+#     source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
+#
+# What this does:
+#   - Adds a second status row (`status 2`) dedicated to cc-vitals so the
+#     existing status bar (window list, status-left/right) is left alone.
+#   - Re-renders that row every second (`status-interval 1`), which is
+#     how the cache TTL countdown ticks smoothly.
+#   - Passes the tmux session name to render-tmux.py so multi-session
+#     setups (one CC per repo) route to the right dump file.
+
+set -g status 2
+set -g status-interval 1
+set -g status-format[1] "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}')"
+
+# Truecolor support — required for the configured palette to render at
+# full fidelity. Comment out if your outer terminal doesn't advertise RGB.
+set -as terminal-features ",*:RGB"
+
+# Alternative single-row layout: drop `set -g status 2` above and uncomment
+# the line below to merge cc-vitals into the existing status-right instead.
+# Trades multi-line layout for keeping your bar at one row.
+#set -g status-right "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}')"

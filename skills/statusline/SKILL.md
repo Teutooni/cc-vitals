@@ -1,15 +1,29 @@
 ---
 name: statusline
-description: This skill should be used when the user asks to "configure statusline", "change statusline theme", "install statusline", "uninstall statusline", "toggle statusline segment", "edit statusline colors", "show statusline config", "/statusline", or mentions customizing the Claude Code statusline. Provides an interactive wizard and direct subcommands for the cc-vitals plugin.
-argument-hint: "[install | uninstall | preset vs-dark-modern|high-contrast|claude-default | toggle <segment> | show | edit]"
+description: This skill should be used when the user asks to "configure statusline", "change statusline theme", "install statusline", "uninstall statusline", "toggle statusline segment", "edit statusline colors", "show statusline config", "switch to tmux mode", "/statusline", or mentions customizing the Claude Code statusline. Provides an interactive wizard and direct subcommands for the cc-vitals plugin.
+argument-hint: "[install | uninstall | mode native|tmux | preset vs-dark-modern|high-contrast|claude-default | toggle <segment> | show | edit]"
 allowed-tools: Read, Edit, Write, Bash, AskUserQuestion
 ---
 
 # Statusline Configuration
 
 Configure the `cc-vitals` plugin. Edits `~/.claude/statusline.json`
-(plugin config) and — for install/uninstall only — `~/.claude/settings.json`
-(Claude Code user settings).
+(plugin config) and — for install/uninstall/mode only —
+`~/.claude/settings.json` (Claude Code user settings).
+
+## Rendering modes
+
+cc-vitals supports two rendering modes; the user picks one per machine.
+
+- **`native`** (default): Claude Code's `statusLine` command runs
+  `scripts/statusline.py` and CC re-renders the bar event-driven. No
+  external dependencies. Cache TTL shows the wall-clock expiry time
+  (HH:mm) — minute-grained, robust to event-driven re-renders.
+- **`tmux`**: CC's `statusLine` runs `scripts/ingest.py` (mutates state,
+  dumps stdin, prints nothing). tmux's status bar runs
+  `scripts/render-tmux.py` every second and paints the line itself.
+  Cache TTL ticks live as a `mm:ss` countdown. Multi-CC routing handled
+  via `CC_VITALS_SLOT` (one tmux session per CC). Requires `tmux ≥ 3.2`.
 
 ## Resolving the plugin root
 
@@ -30,8 +44,9 @@ Parse the first word of `$ARGUMENTS`:
 
 | Argument                   | Action                                             |
 |----------------------------|----------------------------------------------------|
-| `install`                  | Write statusLine command into user settings        |
+| `install`                  | Write the mode-appropriate statusLine command into user settings |
 | `uninstall`                | Remove statusLine command from user settings       |
+| `mode <native\|tmux>`      | Switch rendering mode (rewrites statusLine; tmux mode also installs the tmux conf snippet) |
 | `preset <name>`            | Apply a shipped preset (`vs-dark-modern`, `high-contrast`, `claude-default`) |
 | `toggle <segment>`         | Add/remove a segment from line 1 (only line 1 is affected) |
 | `show`                     | Print effective config + live preview              |
@@ -87,13 +102,18 @@ are preserved verbatim.
 ## Install flow
 
 1. `PLUGIN_ROOT=$(echo "$CLAUDE_PLUGIN_ROOT")` — verify non-empty.
-2. `SCRIPT="$PLUGIN_ROOT/scripts/statusline.py"` — verify the file exists
-   (`Bash: test -f "$SCRIPT"`).
-3. `Read ~/.claude/settings.json` if it exists; treat as `{}` otherwise.
-4. If a `statusLine` key already exists and its `.command` does **not**
-   reference `$SCRIPT`, use `AskUserQuestion` to confirm overwriting before
-   proceeding.
-5. Set the `statusLine` key to:
+2. Read `~/.claude/statusline.json` (`{}` if missing); the active mode is
+   `mode` from the merged config (defaults to `native`).
+3. Pick the entrypoint script based on the mode:
+   - `native`: `SCRIPT="$PLUGIN_ROOT/scripts/statusline.py"`
+   - `tmux`:   `SCRIPT="$PLUGIN_ROOT/scripts/ingest.py"`
+4. Verify the file exists (`Bash: test -f "$SCRIPT"`).
+5. `Read ~/.claude/settings.json` if it exists; treat as `{}` otherwise.
+6. If a `statusLine` key already exists and its `.command` does **not**
+   reference any cc-vitals script (substring match on `statusline.py` or
+   `ingest.py` under the plugin root), use `AskUserQuestion` to confirm
+   overwriting before proceeding.
+7. Set the `statusLine` key to:
    ```json
    {
      "type": "command",
@@ -101,31 +121,92 @@ are preserved verbatim.
      "padding": 0
    }
    ```
-   Using a bash heredoc that calls `python3` to mutate the JSON and write the
+   Use a bash heredoc that calls `python3` to mutate the JSON and write the
    temp file (see "Merging JSON" above). Interpolate the absolute script path.
    Explicitly **remove** any pre-existing `refreshInterval` from the block —
    prior versions of cc-vitals recommended `refreshInterval: 1`, which
-   corrupts the CC TUI; the current TTL display is timestamp-based and needs
-   no polling.
-6. Validate the temp file parses as JSON; then `mv` into place.
-7. Inform the user the statusline activates on the next Claude Code session
-   restart. If a `refreshInterval` was stripped, mention that this is
-   intentional (sub-second polling corrupts the CC diff renderer; the HH:mm
-   expiry clock works without it).
+   corrupts the CC TUI; neither mode needs it (native uses event-driven
+   re-renders; tmux owns its own 1 Hz render loop).
+8. Validate the temp file parses as JSON; then `mv` into place.
+9. For `tmux` mode, also run the tmux conf install (see "Tmux conf install"
+   below) and remind the user about the `cct` wrapper.
+10. Inform the user the statusline activates on the next Claude Code
+    session restart.
 
 ## Uninstall flow
 
 1. Read `~/.claude/settings.json`. If no `statusLine` key, inform the user
    nothing to do and stop.
 2. If `statusLine.command` references this plugin (substring match on
-   `statusline.py` under the plugin root), use `AskUserQuestion` to confirm
-   removal.
+   `statusline.py` *or* `ingest.py` under the plugin root), use
+   `AskUserQuestion` to confirm removal.
 3. If it references a different statusline, warn and stop — do not remove
    a customized entry without explicit confirmation.
-4. On confirm: remove the `statusLine` key from the settings object, validate,
-   and atomic-write.
-5. Leave `~/.claude/statusline.json` and cost data in place (mention this in
-   the final message so the user knows where to delete them if desired).
+4. On confirm: remove the `statusLine` key from the settings object,
+   validate, and atomic-write.
+5. Leave `~/.claude/statusline.json`, cost data, and the tmux conf snippet
+   (if any) in place. Mention each path in the final message so the user
+   knows where to delete them if desired:
+   - `~/.claude/statusline.json` — plugin config / mode
+   - `~/.claude/plugin-data/cc-vitals/` — cost history, dumps, cache state
+   - `~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf` — tmux snippet
+     (and the `source-file` line in `~/.tmux.conf`, if added).
+
+## Mode flow
+
+Switches rendering mode and rewrites everything that has to follow.
+
+1. Validate `<name>` is `native` or `tmux`.
+2. For `tmux`: verify `tmux ≥ 3.2` is on PATH:
+   ```bash
+   tmux -V
+   ```
+   Refuse with a link to install instructions if missing.
+3. Atomic-write `~/.claude/statusline.json` with `config["mode"] = <name>`.
+   For `tmux`, also set `config["segments"]["cache"]["style"] = "countdown"`
+   unless the user already pinned a style; for `native`, set it to
+   `"expiry_clock"` (or remove the key if it matches the default).
+4. If `~/.claude/settings.json` already has a `statusLine` block pointing
+   at a cc-vitals entrypoint, run the install flow to point it at the new
+   mode's entrypoint. Otherwise inform the user that `/statusline install`
+   is still required to activate.
+5. For `tmux`, run the "Tmux conf install" flow below.
+6. For `native`, mention the tmux snippet stays in place (no-op when no
+   CC dumps state) and offer to print the line to remove from
+   `~/.tmux.conf` if the user is done with tmux mode.
+
+## Tmux conf install
+
+The shipped template at `$CLAUDE_PLUGIN_ROOT/tmux/cc-vitals.conf.template`
+uses `__PLUGIN_ROOT__` placeholders. Materialize a per-user copy with
+absolute paths so tmux can find the render script.
+
+1. Build the substituted contents in a bash heredoc and write to
+   `~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf`:
+   ```bash
+   PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+   DEST="$HOME/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf"
+   mkdir -p "$(dirname "$DEST")"
+   sed "s|__PLUGIN_ROOT__|$PLUGIN_ROOT|g" \
+     "$PLUGIN_ROOT/tmux/cc-vitals.conf.template" > "$DEST.tmp"
+   mv "$DEST.tmp" "$DEST"
+   ```
+2. Tell the user to add this line to `~/.tmux.conf`:
+   ```tmux
+   source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
+   ```
+   Use `AskUserQuestion` to optionally append it for them. If appending,
+   first check the line isn't already present (`grep -F`).
+3. Print the launch instructions:
+   - `cct` wrapper at `$CLAUDE_PLUGIN_ROOT/bin/cct` — symlink into PATH
+     or paste the function form into `~/.bashrc`/`~/.zshrc`:
+     ```sh
+     cct() { "$CLAUDE_PLUGIN_ROOT/bin/cct" "$@"; }
+     ```
+   - Manual form: `tmux new-session -s <slot> "claude $@"` (no slot
+     routing without `cct`; mtime fallback applies).
+4. Mention that an existing tmux session won't pick up the conf changes
+   automatically — `tmux source-file ~/.tmux.conf` to reload.
 
 ## Preset flow
 
@@ -186,6 +267,7 @@ One `AskUserQuestion` with these options:
 - Toggle a segment on line 1
 - Change colors or layout (→ Edit flow)
 - Install the statusline into settings.json
+- Switch rendering mode (native ↔ tmux)
 - Uninstall the statusline
 - Show current config and preview
 - Cancel
@@ -197,6 +279,7 @@ Then run the corresponding flow. Cap interaction at two rounds — advise
 
 ```jsonc
 {
+  "mode": "native" | "tmux",
   "theme": "vs-dark-modern" | "high-contrast" | "claude-default" | { ...custom palette... },
   "icons": "nerd" | "ascii",
   "separator": " │ ",
@@ -204,7 +287,8 @@ Then run the corresponding flow. Cap interaction at two rounds — advise
   "segments": {
     "cwd":  { "max_length": 40, "basename_only": false, "icon": "..." },
     "git":  { "dirty_glyph": "●", "ahead_glyph": "↑", "behind_glyph": "↓" },
-    "cost": { "show_session": true, "show_day": true, "show_month": true }
+    "cost": { "show_session": true, "show_day": true, "show_month": true },
+    "cache": { "style": "expiry_clock" | "countdown" }
   },
   "colors": {
     "model": "accent", "cwd": "primary",

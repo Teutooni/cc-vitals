@@ -84,6 +84,58 @@ VS Code Dark Modern palette by default.
 2. In Claude Code, run `/statusline install`. This writes the `statusLine`
    command into `~/.claude/settings.json`. Restart Claude Code to pick it up.
 
+## Rendering modes
+
+cc-vitals can render in two ways. Native (the default) is the simplest;
+tmux mode unlocks a smooth ticking countdown for cache TTL and lets the
+status bar update independently of CC's render loop.
+
+| Aspect              | `native` (default)                          | `tmux`                                          |
+|---------------------|---------------------------------------------|-------------------------------------------------|
+| Renderer            | CC re-renders on every event                | tmux renders the bar at `status-interval 1`     |
+| Cache TTL display   | `HH:mm` wall-clock expiry (minute-grained)  | `mm:ss` countdown ticking every second          |
+| Extra dependencies  | none                                        | `tmux ≥ 3.2`                                    |
+| Multi-CC routing    | n/a (one CC per CC)                         | one tmux session per CC, slot-routed via `cct`  |
+| Setup cost          | zero                                        | ~5 min: `apt install tmux`, source the snippet  |
+
+Switch with `/statusline mode native` or `/statusline mode tmux`.
+
+### Tmux mode setup
+
+After `/statusline mode tmux`, the skill writes a per-user tmux conf at
+`~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf` with absolute paths
+already substituted. Add this line to `~/.tmux.conf`:
+
+```tmux
+source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
+```
+
+By default the snippet adds a second status row (`set -g status 2`)
+dedicated to cc-vitals, leaving your existing window list and
+status-left/right untouched. A commented `status-right` alternative is
+in the file if you'd rather keep one row and merge cc-vitals into the
+right side.
+
+Launch CC through the wrapper so per-session slots are routed correctly:
+
+```sh
+cct                        # fresh CC in a fresh tmux session
+cct -r <session-id>        # resume a CC session
+cct --resume               # interactive picker
+cct --model opus           # any flag claude accepts
+```
+
+The wrapper is at `$CLAUDE_PLUGIN_ROOT/bin/cct` — symlink it into PATH
+or paste this function into `~/.bashrc`:
+
+```sh
+cct() { "$CLAUDE_PLUGIN_ROOT/bin/cct" "$@"; }
+```
+
+You can run several `cct` invocations side by side in different
+terminals — each gets its own tmux session, its own slot, and its own
+status bar showing only that CC's state.
+
 ## Configure
 
 Run `/statusline` for the interactive wizard, or edit

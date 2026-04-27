@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# cct — launch Claude Code inside a fresh tmux session wired up for
+# cc-vitals' tmux mode. The slot id is propagated to:
+#   - the tmux session name (so render-tmux.py picks the right dump
+#     via `#{session_name}`)
+#   - the CC_VITALS_SLOT env var (so the ingest entrypoint writes to
+#     the matching dump file)
+#
+# Usage: cct [args passed to claude]
+#   cct                        # fresh session
+#   cct -r <session-id>        # resume a specific CC session
+#   cct --resume               # interactive picker
+#   cct --model opus           # any flag claude accepts
+#
+# Override the slot explicitly with CC_VITALS_SLOT=<name> cct …
+# Default slot: <cwd-basename>-<short-rand> so concurrent sessions in
+# different repos don't collide.
+set -euo pipefail
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "cct: tmux is not installed. Install tmux or run 'claude' directly." >&2
+  exit 127
+fi
+
+if ! command -v claude >/dev/null 2>&1; then
+  echo "cct: 'claude' is not on PATH." >&2
+  exit 127
+fi
+
+slot="${CC_VITALS_SLOT:-}"
+if [ -z "$slot" ]; then
+  base="$(basename -- "$PWD")"
+  base="${base//[^A-Za-z0-9._-]/_}"
+  rand="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 5 || echo "$$" )"
+  slot="${base}-${rand}"
+fi
+
+# Quote the claude command so flags survive the shell tmux spawns.
+cmd="claude"
+for a in "$@"; do
+  cmd+=" $(printf '%q' "$a")"
+done
+
+exec env CC_VITALS_SLOT="$slot" tmux new-session -s "$slot" "$cmd"

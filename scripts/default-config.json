@@ -1,4 +1,5 @@
 {
+  "mode": "native",
   "theme": "vs-dark-modern",
   "icons": "nerd",
   "separator": " │ ",
