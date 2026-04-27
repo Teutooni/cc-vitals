@@ -203,3 +203,11 @@ you no longer want them.
 ## License
 
 MIT
+
+## 💰 Bounty Contribution
+
+- **Task:** Cache rewrite estimate overestimates
+- **Reward:** $3
+- **Source:** GitHub-Paid
+- **Date:** 2026-04-27
+
