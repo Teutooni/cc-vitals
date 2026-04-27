@@ -10,9 +10,9 @@ input_tokens is nearly always 1 (everything gets cache-controlled), so
 a single turn that rebuilds half the prefix still reads ~99% on a per-
 turn basis. Session totals smooth that out.
 
-To keep parsing cheap with `refreshInterval: 1`, we persist
-{file_size, totals, tier} per session_id and only read the new tail
-(file_size_old → file_size_new) on each render.
+To keep per-render parsing cheap regardless of refresh frequency, we
+persist {file_size, totals, tier} per session_id and only read the new
+tail (file_size_old → file_size_new) on each render.
 """
 import json
 import time

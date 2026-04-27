@@ -103,9 +103,15 @@ are preserved verbatim.
    ```
    Using a bash heredoc that calls `python3` to mutate the JSON and write the
    temp file (see "Merging JSON" above). Interpolate the absolute script path.
+   Explicitly **remove** any pre-existing `refreshInterval` from the block —
+   prior versions of cc-vitals recommended `refreshInterval: 1`, which
+   corrupts the CC TUI; the current TTL display is timestamp-based and needs
+   no polling.
 6. Validate the temp file parses as JSON; then `mv` into place.
 7. Inform the user the statusline activates on the next Claude Code session
-   restart.
+   restart. If a `refreshInterval` was stripped, mention that this is
+   intentional (sub-second polling corrupts the CC diff renderer; the HH:mm
+   expiry clock works without it).
 
 ## Uninstall flow
 
@@ -220,10 +226,13 @@ Available segments: `model`, `effort`, `cwd`, `git`, `env`, `cost`,
 `tokens-session`, `cache`, `duration`, `runtime`, `cc-version`.
 (`cost-avg` is a legacy alias for `cost-day-forecast`.)
 
-The `cache` segment shows a TTL countdown for Anthropic's 5-minute prompt
-cache. Without `refreshInterval` set in `~/.claude/settings.json`, the TTL
-only updates when an assistant message arrives — set
-`"refreshInterval": 1` in the `statusLine` block to make it tick live.
+The `cache` segment shows the wall-clock expiry time of Anthropic's prompt
+cache (auto-detects 5m vs 1h tier) plus an urgency-glyph tier
+(⏳ → ⏰ <alert → ⚠ <warn → ⚠ expired). Do **not** set `refreshInterval`
+in the `statusLine` block — sub-second polling corrupts the CC TUI's diff
+renderer, and the HH:mm clock only needs the event-driven re-renders CC
+already does. The shipped plugin includes a `PostToolUse` hook that
+keeps the expiry accurate during long agent turns.
 
 ## Safety recap
 
