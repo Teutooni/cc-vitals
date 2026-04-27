@@ -29,7 +29,9 @@
       "show_icon": true,
       "hit_warn_below": 70,
       "hit_crit_below": 30,
-      "ttl_warn_seconds": 30,
+      "ttl_alert_seconds": {"1h": 300, "5m": 60},
+      "ttl_warn_seconds": {"1h": 60, "5m": 15},
+      "timezone": "local",
       "at_risk_min": 0.01
     }
   },
@@ -76,6 +78,7 @@
     "cache.hit_low": "warning",
     "cache.hit_crit": "error",
     "cache.ttl": "muted",
+    "cache.ttl_alert": "#D97757",
     "cache.ttl_warn": "warning",
     "cache.expired": "error",
     "cache.at_risk": "muted",

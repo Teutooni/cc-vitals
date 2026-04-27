@@ -33,19 +33,32 @@ VS Code Dark Modern palette by default.
   they overlap), each with its own gradient.
 - **Token activity** — `tokens` shows last-turn `↑fresh-input ↓output
   +cache-creation`; `tokens-session` shows cumulative `Σ ↑in ↓out`.
-- **Prompt-cache health** — `cache` segment shows session hit ratio, TTL
-  countdown on Anthropic's prompt cache, and an estimated $ at risk if the
-  cache expires before your next message. Hit ratio is rolled up across
-  every assistant turn in the session (`Σcache_read / Σ(cache_read +
-  input_tokens + cache_creation)`) — per-turn ratios are misleading because
-  Claude Code cache-controls nearly all input, leaving `input_tokens` ≈ 0.
-  Totals are aggregated incrementally from the transcript and persisted per
-  session, so renders stay sub-millisecond even with `refreshInterval: 1`.
-  The cache tier (5-min vs 1-hour) is auto-detected from the latest
-  assistant turn's usage breakdown — Claude Code currently uses the 1-hour
-  tier. To make the TTL tick live between assistant messages, set
-  `"refreshInterval": 1` in the `statusLine` block of
-  `~/.claude/settings.json`.
+- **Prompt-cache health** — `cache` segment shows session hit ratio, the
+  wall-clock expiry time of Anthropic's prompt cache (HH:mm), and an
+  estimated $ at risk if the cache expires before your next message. Hit
+  ratio is rolled up across every assistant turn in the session
+  (`Σcache_read / Σ(cache_read + input_tokens + cache_creation)`) —
+  per-turn ratios are misleading because Claude Code cache-controls nearly
+  all input, leaving `input_tokens` ≈ 0. Totals are aggregated
+  incrementally from the transcript and persisted per session. The cache
+  tier (5-min vs 1-hour) is auto-detected from the latest assistant turn's
+  usage breakdown — new Claude Code installs default to 5-min, older
+  installs may still be on 1-hour. A glyph tier conveys urgency on every
+  event-driven re-render: ⏳ ok → ⏰ alert → ⚠ warn → ⚠ expired.
+  Thresholds scale with the detected tier (alert <60s / warn <15s on
+  5-min; alert <5m / warn <1m on 1-hour) and are configurable via
+  `segments.cache.ttl_alert_seconds` / `ttl_warn_seconds` (set a number
+  to apply across tiers, or `{"1h": N, "5m": M}` to keep them split). The
+  expiry clock follows the system timezone by default; if Claude Code
+  runs in a UTC container while you read the host clock, override with
+  `segments.cache.timezone` — accepts an IANA name
+  (`"America/Los_Angeles"`, needs Python 3.9+ `zoneinfo`), a fixed offset
+  (`"+05:30"` / `"-0800"`), `"UTC"`, or `"local"` for system default. A
+  high-frequency `refreshInterval` isn't needed and is actively harmful —
+  sub-second polling corrupts the CC TUI. The shipped plugin includes a `PostToolUse` hook that bumps a
+  per-session marker on every tool call, so the expiry clock stays
+  accurate during long agent turns when the transcript file mtime would
+  otherwise lag the actual API requests.
 - **Zero runtime deps** beyond Python 3 standard library.
 
 ## Requirements

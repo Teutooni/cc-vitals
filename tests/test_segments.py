@@ -68,18 +68,133 @@ class FmtTokens(unittest.TestCase):
         self.assertEqual(segments._fmt_tokens(None), '0')
 
 
-class FmtTtl(unittest.TestCase):
-    def test_seconds(self):
-        self.assertEqual(segments._fmt_ttl(45), '0:45')
+class FmtClock(unittest.TestCase):
+    def test_renders_local_hh_mm(self):
+        import time
+        epoch = time.time() + 600  # 10 min from now
+        out = segments._fmt_clock(epoch)
+        self.assertRegex(out, r'^\d{2}:\d{2}$')
 
-    def test_minutes(self):
-        self.assertEqual(segments._fmt_ttl(125), '2:05')
+    def test_matches_localtime(self):
+        import time
+        epoch = 1_700_000_000
+        expected = time.strftime('%H:%M', time.localtime(epoch))
+        self.assertEqual(segments._fmt_clock(epoch), expected)
 
-    def test_hours(self):
-        self.assertEqual(segments._fmt_ttl(3725), '1:02:05')
+    def test_utc_tz_argument(self):
+        from datetime import timezone
+        # 2023-11-14 22:13:20 UTC.
+        self.assertEqual(segments._fmt_clock(1_700_000_000, timezone.utc),
+                         '22:13')
 
-    def test_negative_clamps(self):
-        self.assertEqual(segments._fmt_ttl(-5), '0:00')
+    def test_fixed_offset_argument(self):
+        from datetime import timedelta, timezone
+        # +05:30 of 22:13 UTC = 03:43 next day.
+        tz = timezone(timedelta(hours=5, minutes=30))
+        self.assertEqual(segments._fmt_clock(1_700_000_000, tz), '03:43')
+
+
+class ResolveTz(unittest.TestCase):
+    def test_none_returns_none(self):
+        self.assertIsNone(segments._resolve_tz(None))
+
+    def test_local_returns_none(self):
+        self.assertIsNone(segments._resolve_tz('local'))
+        self.assertIsNone(segments._resolve_tz('SYSTEM'))
+        self.assertIsNone(segments._resolve_tz(''))
+
+    def test_utc(self):
+        from datetime import timezone
+        self.assertEqual(segments._resolve_tz('UTC'), timezone.utc)
+        self.assertEqual(segments._resolve_tz('utc'), timezone.utc)
+
+    def test_positive_offset_with_colon(self):
+        from datetime import timedelta
+        tz = segments._resolve_tz('+05:30')
+        self.assertEqual(tz.utcoffset(None), timedelta(hours=5, minutes=30))
+
+    def test_negative_offset_no_colon(self):
+        from datetime import timedelta
+        tz = segments._resolve_tz('-0800')
+        self.assertEqual(tz.utcoffset(None), timedelta(hours=-8))
+
+    def test_iana_name_resolves_when_available(self):
+        try:
+            from zoneinfo import ZoneInfo  # noqa: F401
+        except ImportError:
+            self.skipTest('zoneinfo unavailable on this Python')
+        tz = segments._resolve_tz('America/Los_Angeles')
+        self.assertIsNotNone(tz)
+
+    def test_unknown_tz_falls_back_to_none(self):
+        self.assertIsNone(segments._resolve_tz('Not/A/Real/Zone'))
+
+    def test_non_string_returns_none(self):
+        self.assertIsNone(segments._resolve_tz(123))
+        self.assertIsNone(segments._resolve_tz(['UTC']))
+
+
+class ResolveTierSecs(unittest.TestCase):
+    def test_int_passes_through(self):
+        self.assertEqual(segments._resolve_tier_secs(42, 3600, 99), 42)
+        self.assertEqual(segments._resolve_tier_secs(42, 300, 99), 42)
+
+    def test_dict_picks_1h_for_long_ttl(self):
+        out = segments._resolve_tier_secs({'1h': 300, '5m': 60}, 3600, 0)
+        self.assertEqual(out, 300)
+
+    def test_dict_picks_5m_for_short_ttl(self):
+        out = segments._resolve_tier_secs({'1h': 300, '5m': 60}, 300, 0)
+        self.assertEqual(out, 60)
+
+    def test_dict_falls_back_when_tier_missing(self):
+        out = segments._resolve_tier_secs({'1h': 300}, 300, 99)
+        self.assertEqual(out, 99)
+
+    def test_none_returns_fallback(self):
+        self.assertEqual(segments._resolve_tier_secs(None, 3600, 99), 99)
+
+    def test_float_coerced_to_int(self):
+        self.assertEqual(segments._resolve_tier_secs(60.5, 3600, 0), 60)
+
+
+class TierKey(unittest.TestCase):
+    def test_5m_for_300(self):
+        self.assertEqual(segments._tier_key(300), '5m')
+
+    def test_1h_for_3600(self):
+        self.assertEqual(segments._tier_key(3600), '1h')
+
+    def test_in_between_falls_back_to_1h(self):
+        self.assertEqual(segments._tier_key(900), '1h')
+
+    def test_below_5m_treated_as_5m(self):
+        self.assertEqual(segments._tier_key(60), '5m')
+
+
+class TtlTier(unittest.TestCase):
+    def test_expired_at_zero(self):
+        self.assertEqual(segments._ttl_tier(0, 300, 60), 'expired')
+
+    def test_expired_negative(self):
+        self.assertEqual(segments._ttl_tier(-10, 300, 60), 'expired')
+
+    def test_warn_below_warn_secs(self):
+        self.assertEqual(segments._ttl_tier(45, 300, 60), 'warn')
+
+    def test_alert_below_alert_secs(self):
+        self.assertEqual(segments._ttl_tier(120, 300, 60), 'alert')
+
+    def test_ok_above_alert_secs(self):
+        self.assertEqual(segments._ttl_tier(1800, 300, 60), 'ok')
+
+    def test_warn_boundary(self):
+        # exactly warn_secs => not warn, just alert
+        self.assertEqual(segments._ttl_tier(60, 300, 60), 'alert')
+
+    def test_alert_boundary(self):
+        # exactly alert_secs => not alert, just ok
+        self.assertEqual(segments._ttl_tier(300, 300, 60), 'ok')
 
 
 class DetectEffort(unittest.TestCase):

@@ -2,8 +2,14 @@
 import os
 import re
 import subprocess
+import time as _time
 
-from cache import get_cache_ttl_remaining, get_session_cache_state, DEFAULT_TTL_SECONDS
+from cache import (
+    get_cache_expiry_epoch,
+    get_cache_ttl_remaining,
+    get_session_cache_state,
+    DEFAULT_TTL_SECONDS,
+)
 from colors import paint, gradient_hex
 from cost import update_and_get, get_projection, get_month_projection
 from context import get_context_usage
@@ -790,21 +796,103 @@ def render_tokens_session(data, config, theme):
     return ' '.join(parts)
 
 
-def _fmt_ttl(seconds):
-    """0:00 m:ss for under an hour, h:mm:ss above."""
-    s = int(seconds)
-    if s < 0:
-        s = 0
-    if s >= 3600:
-        h, rem = divmod(s, 3600)
-        m, sec = divmod(rem, 60)
-        return f'{h}:{m:02d}:{sec:02d}'
-    m, sec = divmod(s, 60)
-    return f'{m}:{sec:02d}'
+_TZ_OFFSET_RX = re.compile(r'^([+-])(\d{2}):?(\d{2})$')
+
+
+def _resolve_tz(tz_config):
+    """Return a tzinfo (or None for system-local).
+
+    Accepts: ``None`` / ``'local'`` / ``'system'`` (system local — None);
+    ``'UTC'``; offset strings (``'+05:30'`` / ``'-0800'``); or any IANA
+    name (``'America/Los_Angeles'``). IANA names need ``zoneinfo``
+    (Python 3.9+); on older Pythons or when the tz database is missing,
+    we silently fall back to system local rather than blanking the segment.
+    """
+    if tz_config is None:
+        return None
+    if not isinstance(tz_config, str):
+        return None
+    s = tz_config.strip()
+    if not s or s.lower() in ('local', 'system'):
+        return None
+    if s.upper() == 'UTC':
+        from datetime import timezone
+        return timezone.utc
+    m = _TZ_OFFSET_RX.match(s)
+    if m:
+        from datetime import timedelta, timezone
+        sign, hh, mm = m.groups()
+        offset = timedelta(hours=int(hh), minutes=int(mm))
+        if sign == '-':
+            offset = -offset
+        return timezone(offset)
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+        return ZoneInfo(s)
+    except ImportError:
+        return None
+    except Exception:
+        # ZoneInfoNotFoundError or any IO error reading the tz database.
+        return None
+
+
+def _fmt_clock(epoch_seconds, tz=None):
+    """HH:mm at the given tzinfo (or system-local if ``tz is None``).
+
+    Used to show *when* the cache expires rather than a live countdown
+    — minute-grained clocks survive low-frequency statusline refreshes
+    (CC's docs explicitly endorse this for time data). The tz hook lets
+    a UTC container display the host's wall-clock time."""
+    if tz is None:
+        return _time.strftime('%H:%M', _time.localtime(epoch_seconds))
+    from datetime import datetime
+    return datetime.fromtimestamp(epoch_seconds, tz).strftime('%H:%M')
+
+
+# Glyph tier thresholds (seconds remaining). Picked so that each event-driven
+# CC re-render conveys urgency passively — no polling required.
+_TTL_GLYPH_DEFAULTS = {
+    'ok':      '⏳',
+    'alert':   '⏰',
+    'warn':    '⚠',
+    'expired': '⚠',
+}
+
+
+def _ttl_tier(remaining, alert_secs, warn_secs):
+    if remaining <= 0:
+        return 'expired'
+    if remaining < warn_secs:
+        return 'warn'
+    if remaining < alert_secs:
+        return 'alert'
+    return 'ok'
+
+
+def _tier_key(ttl_seconds):
+    """Map a TTL window to a config key. Anything ≥1h is treated as '1h',
+    anything ≤5m as '5m'; values in between fall back to the larger key."""
+    if ttl_seconds >= 3600:
+        return '1h'
+    if ttl_seconds <= 300:
+        return '5m'
+    return '1h'
+
+
+def _resolve_tier_secs(value, ttl_seconds, fallback):
+    """Accept int (use as-is) or {'1h': N, '5m': M} (lookup by current tier).
+    Falls through to `fallback` if a dict lacks an entry for the active tier."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, dict):
+        v = value.get(_tier_key(ttl_seconds))
+        if isinstance(v, (int, float)):
+            return int(v)
+    return int(fallback)
 
 
 def render_cache(data, config, theme):
-    """Prompt-cache health: hit ratio · TTL countdown · $ at risk on miss.
+    """Prompt-cache health: hit ratio · expiry clock · $ at risk on miss.
 
     Hit ratio is rolled up across every assistant turn in the current
     session — `Σcache_read / Σ(cache_read + input_tokens + cache_creation)`
@@ -813,12 +901,16 @@ def render_cache(data, config, theme):
     is nearly always 1, so a single turn that rebuilds half the prefix still
     reads ~99% on a per-turn basis. The session view shows true efficiency.
 
-    TTL is approximated from the transcript file mtime, with the cache tier
-    (5m vs 1h) auto-detected from the latest assistant turn's usage
-    breakdown. `at_risk` uses the most recent turn's cache_read since that
-    represents the value at risk on the next miss. Needs
-    `"refreshInterval": 1` in settings to tick live between assistant
-    messages.
+    TTL is shown as the wall-clock expiry time (HH:mm), not a countdown —
+    a sub-second `refreshInterval` corrupts CC's TUI re-renders, but a
+    minute-grained clock works fine at the docs-recommended 60s interval.
+    The PostToolUse hook bumps a per-session marker so long agent turns
+    keep the expiry accurate. Glyph tiers (⏳ → ⏰ <5m → ⚠ <1m → ⚠ expired)
+    convey urgency on each event-driven re-render without any polling.
+
+    The cache tier (5m vs 1h) is auto-detected from the latest assistant
+    turn's usage breakdown. `at_risk` uses the most recent turn's
+    cache_read since that represents the value at risk on the next miss.
     """
     cw = data.get('context_window') or {}
     cu = cw.get('current_usage') or {}
@@ -878,17 +970,45 @@ def render_cache(data, config, theme):
         icon = ''  # only attach to first piece
 
     if seg.get('show_ttl', True):
-        remaining = get_cache_ttl_remaining(transcript, ttl_seconds)
+        remaining = get_cache_ttl_remaining(transcript, ttl_seconds, session_id)
         if remaining is not None:
-            if remaining <= 0:
-                label = 'expired'
+            # 5m cache shrinks the warning windows proportionally — alerting at
+            # "5 min remaining" on a 5-min cache means always alert.
+            alert_default = 60 if ttl_seconds <= 300 else 300
+            warn_default = 15 if ttl_seconds <= 300 else 60
+            alert_secs = _resolve_tier_secs(
+                seg.get('ttl_alert_seconds'), ttl_seconds, alert_default,
+            )
+            warn_secs = _resolve_tier_secs(
+                seg.get('ttl_warn_seconds'), ttl_seconds, warn_default,
+            )
+            tier = _ttl_tier(remaining, alert_secs, warn_secs)
+            glyphs = dict(_TTL_GLYPH_DEFAULTS)
+            user_glyphs = seg.get('ttl_glyphs')
+            if isinstance(user_glyphs, dict):
+                glyphs.update({k: v for k, v in user_glyphs.items() if isinstance(v, str)})
+            # Single-glyph back-compat: a string `ttl_glyph` overrides the
+            # 'ok' tier without forcing users to expand the full map.
+            single = seg.get('ttl_glyph')
+            if isinstance(single, str):
+                glyphs['ok'] = single
+
+            if tier == 'expired':
+                label = f"{glyphs['expired']} expired"
                 col = c.get('cache.expired', 'error')
             else:
-                warn_secs = int(seg.get('ttl_warn_seconds', 30))
-                col = c.get('cache.ttl_warn', 'warning') if remaining < warn_secs else c.get('cache.ttl', 'muted')
-                label = _fmt_ttl(remaining)
-            ttl_glyph = seg.get('ttl_glyph', '⏳')
-            parts.append(paint(f'{ttl_glyph} {label}', col, theme))
+                expiry = get_cache_expiry_epoch(transcript, ttl_seconds, session_id)
+                tz = _resolve_tz(seg.get('timezone'))
+                clock = _fmt_clock(expiry, tz) if expiry is not None else ''
+                col_keys = {
+                    'warn':  ('cache.ttl_warn', 'warning'),
+                    'alert': ('cache.ttl_alert', c.get('cache.ttl_warn', 'warning')),
+                    'ok':    ('cache.ttl', 'muted'),
+                }
+                key, default = col_keys[tier]
+                col = c.get(key, default)
+                label = f'{glyphs[tier]} {clock}'.strip()
+            parts.append(paint(label, col, theme))
 
     # at_risk reflects what's at stake on the *next* miss, so it uses the
     # most recent turn's cache_read (from current_usage), not the session sum.

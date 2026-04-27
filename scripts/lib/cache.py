@@ -34,28 +34,56 @@ DEFAULT_TTL_SECONDS = 3600
 
 STATE_FILE = DATA_DIR / 'cache-state.json'
 
+# PostToolUse hook touches a per-session marker here so the cache age
+# tracks long agent turns where transcript flushing can lag the actual
+# cache-refreshing API calls. See hooks/cache-refresh.py.
+REFRESH_DIR = DATA_DIR / 'cache-refresh'
+
 # Idle ticks (no new transcript bytes) skip the rewrite, but bump last_seen
 # at least this often so LRU pruning doesn't evict an active session.
 _IDLE_TOUCH_SECONDS = 300
 
 
-def get_cache_age_seconds(transcript_path):
-    """Seconds since the transcript was last written, or None if unavailable."""
-    if not transcript_path:
-        return None
-    try:
-        mtime = Path(transcript_path).stat().st_mtime
-    except OSError:
-        return None
-    return max(0.0, time.time() - mtime)
+def _last_refresh_epoch(transcript_path, session_id=None):
+    """Most recent of: transcript mtime, hook marker mtime. None if neither
+    exists. Lets the hook win during long tool turns while the transcript
+    still anchors the read between sessions."""
+    times = []
+    if transcript_path:
+        try:
+            times.append(Path(transcript_path).stat().st_mtime)
+        except OSError:
+            pass
+    if session_id:
+        try:
+            times.append((REFRESH_DIR / session_id).stat().st_mtime)
+        except OSError:
+            pass
+    return max(times) if times else None
 
 
-def get_cache_ttl_remaining(transcript_path, ttl_seconds=DEFAULT_TTL_SECONDS):
+def get_cache_age_seconds(transcript_path, session_id=None):
+    """Seconds since the cache was last refreshed, or None if unavailable."""
+    epoch = _last_refresh_epoch(transcript_path, session_id)
+    if epoch is None:
+        return None
+    return max(0.0, time.time() - epoch)
+
+
+def get_cache_ttl_remaining(transcript_path, ttl_seconds=DEFAULT_TTL_SECONDS, session_id=None):
     """Seconds remaining on the prompt cache. Negative when expired, None if unknown."""
-    age = get_cache_age_seconds(transcript_path)
+    age = get_cache_age_seconds(transcript_path, session_id)
     if age is None:
         return None
     return ttl_seconds - age
+
+
+def get_cache_expiry_epoch(transcript_path, ttl_seconds=DEFAULT_TTL_SECONDS, session_id=None):
+    """Wall-clock epoch when the cache will expire (or did). None if unknown."""
+    epoch = _last_refresh_epoch(transcript_path, session_id)
+    if epoch is None:
+        return None
+    return epoch + ttl_seconds
 
 
 def _scan_chunk(text, seen_ids):

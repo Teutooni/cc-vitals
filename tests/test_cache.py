@@ -146,6 +146,76 @@ class TtlHelpers(unittest.TestCase):
             remaining = cache.get_cache_ttl_remaining(str(p), ttl_seconds=3600)
             self.assertLess(remaining, 0)
 
+    def test_expiry_epoch_is_mtime_plus_ttl(self):
+        with TemporaryDirectory() as d:
+            p = Path(d) / 'x.jsonl'
+            p.write_text('hi')
+            mtime = p.stat().st_mtime
+            expiry = cache.get_cache_expiry_epoch(str(p), ttl_seconds=3600)
+            self.assertAlmostEqual(expiry, mtime + 3600, places=1)
+
+    def test_expiry_none_when_unknown(self):
+        self.assertIsNone(cache.get_cache_expiry_epoch(None, ttl_seconds=3600))
+
+
+class HookTouch(unittest.TestCase):
+    """The PostToolUse hook bumps a per-session marker file. The cache age
+    should pick the most recent of (transcript mtime, marker mtime) so that
+    long agent turns — where transcripts may flush only at turn end — still
+    show an accurate expiry."""
+
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self._patch = mock.patch.object(
+            cache, 'REFRESH_DIR', Path(self._tmp.name) / 'cache-refresh',
+        )
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmp.cleanup()
+
+    def _stale(self, path, seconds_ago):
+        import os
+        old = time.time() - seconds_ago
+        os.utime(path, (old, old))
+
+    def test_marker_overrides_stale_transcript(self):
+        with TemporaryDirectory() as d:
+            transcript = Path(d) / 't.jsonl'
+            transcript.write_text('hi')
+            self._stale(transcript, 1800)  # 30 min old
+            cache.REFRESH_DIR.mkdir(parents=True, exist_ok=True)
+            (cache.REFRESH_DIR / 'sess1').touch()
+            age = cache.get_cache_age_seconds(str(transcript), 'sess1')
+            self.assertLess(age, 5.0)
+
+    def test_no_marker_falls_back_to_transcript(self):
+        with TemporaryDirectory() as d:
+            transcript = Path(d) / 't.jsonl'
+            transcript.write_text('hi')
+            self._stale(transcript, 100)
+            age = cache.get_cache_age_seconds(str(transcript), 'sess-no-marker')
+            self.assertGreater(age, 90)
+
+    def test_transcript_wins_when_newer(self):
+        with TemporaryDirectory() as d:
+            transcript = Path(d) / 't.jsonl'
+            transcript.write_text('hi')
+            cache.REFRESH_DIR.mkdir(parents=True, exist_ok=True)
+            marker = cache.REFRESH_DIR / 'sess1'
+            marker.touch()
+            self._stale(marker, 1800)
+            age = cache.get_cache_age_seconds(str(transcript), 'sess1')
+            self.assertLess(age, 5.0)
+
+    def test_marker_only_no_transcript(self):
+        cache.REFRESH_DIR.mkdir(parents=True, exist_ok=True)
+        (cache.REFRESH_DIR / 'sess1').touch()
+        age = cache.get_cache_age_seconds(None, 'sess1')
+        self.assertIsNotNone(age)
+        self.assertLess(age, 5.0)
+
 
 class GetSessionCacheState(unittest.TestCase):
     def setUp(self):
