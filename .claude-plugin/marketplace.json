@@ -10,7 +10,7 @@
       "name": "cc-vitals",
       "description": "Customizable multi-line statusline for Claude Code with git, environment, cost tracking, context usage, cache health, and themeable colors. Native and tmux rendering modes.",
       "category": "productivity",
-      "source": ".",
+      "source": "./",
       "homepage": "https://github.com/Teutooni/cc-vitals"
     }
   ]
