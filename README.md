@@ -26,6 +26,16 @@ VS Code Dark Modern palette by default.
 - **Git details** — branch, dirty marker, ahead/behind counts, upstream
   tracking, worktree marker, and an in-progress operation badge for
   merge / rebase (with step/total) / cherry-pick / revert / bisect.
+  Results are cached per-cwd in plugin-data, fingerprinted by
+  `.git/HEAD` and `.git/index` mtimes — branch switches and staging
+  changes invalidate immediately, while a short time TTL covers
+  working-tree edits. On slow filesystems (WSL→NTFS, network mounts)
+  the segment falls back to its previous result rather than blanking
+  when `git status` exceeds the timeout. With no cache yet, a
+  ⏳ slow marker surfaces in warning color so a misbehaving git is
+  visible rather than silently dropped. Tune via
+  `segments.git.timeout` (default 3.0s) and `segments.git.cache_ttl`
+  (default 5.0s).
 - **Context window usage** — read from Claude Code's pre-computed
   `context_window.used_percentage`, with transcript parsing as a fallback.
 - **Subscription rate limits** — `limits` segment overlays the 5-hour and

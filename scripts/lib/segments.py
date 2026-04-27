@@ -276,20 +276,35 @@ _OP_LABELS = {
 
 def render_git(data, config, theme):
     cwd = data.get('cwd') or (data.get('workspace') or {}).get('current_dir')
-    info = get_git_info(cwd)
+    seg = config.get('segments', {}).get('git', {})
+    info = get_git_info(
+        cwd,
+        timeout=seg.get('timeout'),
+        cache_ttl=seg.get('cache_ttl'),
+    )
     if not info:
         return ''
-    seg = config.get('segments', {}).get('git', {})
     style = config.get('icons', 'nerd')
+    c = _colors(config)
+    icon = _icon(config, 'git')
+
+    if info.get('error') == 'timeout':
+        # In a repo, but `git status` timed out and there's no prior
+        # cache to fall back to. Show a warning marker rather than
+        # blanking the segment — silent disappearance hides a real
+        # filesystem problem the user should know about.
+        glyph = seg.get('timeout_glyph', '⏳' if style == 'nerd' else '?')
+        label_text = seg.get('timeout_label', 'slow')
+        col = c.get('git.timeout', 'warning')
+        return paint(f'{icon} {glyph} {label_text}'.strip(), col, theme)
+
     ahead_glyph = seg.get('ahead_glyph', '↑' if style == 'nerd' else '^')
     behind_glyph = seg.get('behind_glyph', '↓' if style == 'nerd' else 'v')
     glyphs = seg.get('status_glyphs', {})
-    c = _colors(config)
     branch_col = c.get('git.branch')
     no_up_col = c.get('git.no_upstream')
     op_col = c.get('git.op', 'error')
     wt_col = c.get('git.worktree', 'accent')
-    icon = _icon(config, 'git')
 
     parts = []
     op = info.get('op_state')

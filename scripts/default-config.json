@@ -8,7 +8,7 @@
   ],
   "segments": {
     "cwd": {"max_length": 40},
-    "git": {"ahead_glyph": "↑", "behind_glyph": "↓", "show_worktree": true},
+    "git": {"ahead_glyph": "↑", "behind_glyph": "↓", "show_worktree": true, "timeout": 3.0, "cache_ttl": 5.0},
     "cost": {"show_session": true, "show_day": true, "show_month": true},
     "cost_day_forecast": {"window": 7, "show_arrow": true, "show_avg": true},
     "cost_month_forecast": {"window": 7, "show_arrow": true, "show_so_far": false, "decimals": 0},
@@ -47,6 +47,7 @@
     "git.no_upstream": "muted",
     "git.op": "error",
     "git.worktree": "accent",
+    "git.timeout": "warning",
     "cost.session": "primary",
     "cost.day": "muted",
     "cost.month": "muted",

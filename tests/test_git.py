@@ -52,8 +52,18 @@ class GetGitInfo(unittest.TestCase):
         self.repo = self._tmp.name
         _git(self.repo, 'init', '-q', '-b', 'main')
         _git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+        # Isolate the on-disk cache so tests don't leak across each other
+        # and don't pollute the user's real plugin-data.
+        self._cache_tmp = TemporaryDirectory()
+        self._patch = mock.patch.object(
+            git, 'CACHE_FILE',
+            Path(self._cache_tmp.name) / 'git-cache.json',
+        )
+        self._patch.start()
 
     def tearDown(self):
+        self._patch.stop()
+        self._cache_tmp.cleanup()
         self._tmp.cleanup()
 
     def test_clean_repo(self):
@@ -99,6 +109,124 @@ class GetGitInfo(unittest.TestCase):
 
     def test_no_cwd(self):
         self.assertIsNone(git.get_git_info(None))
+
+
+@unittest.skipUnless(_git_available(), 'git not installed')
+class GitCaching(unittest.TestCase):
+    def setUp(self):
+        self._repo_tmp = TemporaryDirectory()
+        self.repo = self._repo_tmp.name
+        _git(self.repo, 'init', '-q', '-b', 'main')
+        _git(self.repo, 'commit', '-q', '--allow-empty', '-m', 'init')
+        self._cache_tmp = TemporaryDirectory()
+        self._patch = mock.patch.object(
+            git, 'CACHE_FILE',
+            Path(self._cache_tmp.name) / 'git-cache.json',
+        )
+        self._patch.start()
+
+    def tearDown(self):
+        self._patch.stop()
+        self._cache_tmp.cleanup()
+        self._repo_tmp.cleanup()
+
+    def test_cache_hit_skips_subprocess(self):
+        first = git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+        self.assertIsNotNone(first)
+        with mock.patch.object(git, '_query_git') as q:
+            second = git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+            q.assert_not_called()
+        self.assertEqual(first, second)
+
+    def test_signature_change_invalidates_cache(self):
+        first = git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+        # Simulate an index update by bumping HEAD's mtime — the
+        # signature check will see a fresh fingerprint and re-query.
+        head = Path(self.repo, '.git', 'HEAD')
+        new_mt = head.stat().st_mtime + 10
+        os.utime(head, (new_mt, new_mt))
+        with mock.patch.object(git, '_query_git', wraps=git._query_git) as q:
+            git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+            self.assertEqual(q.call_count, 1)
+        self.assertIsNotNone(first)
+
+    def test_ttl_expiry_invalidates_cache(self):
+        git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+        # Pretend the cached entry was populated long ago.
+        import json
+        cf = git.CACHE_FILE
+        data = json.loads(cf.read_text())
+        data['entries'][self.repo]['updated_at'] = 0
+        cf.write_text(json.dumps(data))
+        with mock.patch.object(git, '_query_git', wraps=git._query_git) as q:
+            git.get_git_info(self.repo, timeout=5.0, cache_ttl=1.0)
+            self.assertEqual(q.call_count, 1)
+
+    def test_timeout_falls_back_to_stale_cache(self):
+        first = git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+        # Force a fresh query to fail by stubbing _query_git → None,
+        # while also expiring the TTL so the cache hit branch isn't taken.
+        import json
+        cf = git.CACHE_FILE
+        data = json.loads(cf.read_text())
+        data['entries'][self.repo]['updated_at'] = 0
+        cf.write_text(json.dumps(data))
+        with mock.patch.object(git, '_query_git', return_value=None):
+            stale = git.get_git_info(self.repo, timeout=5.0, cache_ttl=1.0)
+        self.assertEqual(stale, first)
+
+    def test_timeout_with_no_cache_returns_error_stub(self):
+        # In a repo, no prior cache, git fails — surface a stub so the
+        # segment can render a warning rather than disappearing.
+        with mock.patch.object(git, '_query_git', return_value=None):
+            info = git.get_git_info(self.repo, timeout=5.0, cache_ttl=60.0)
+        self.assertIsNotNone(info)
+        self.assertEqual(info.get('error'), 'timeout')
+        self.assertIsNone(info.get('branch'))
+
+    def test_non_repo_still_returns_none_on_failure(self):
+        # Outside a repo, _signature returns None and we never query
+        # git. Result must remain None so the segment cleanly drops.
+        with TemporaryDirectory() as d:
+            with mock.patch.object(git, '_query_git', return_value=None):
+                self.assertIsNone(git.get_git_info(d))
+
+    def test_lru_prunes_old_entries(self):
+        # Create more than MAX_CACHED_CWDS distinct fake repos.
+        original_max = git.MAX_CACHED_CWDS
+        with mock.patch.object(git, 'MAX_CACHED_CWDS', 3):
+            for i in range(5):
+                with TemporaryDirectory() as d:
+                    _git(d, 'init', '-q', '-b', 'main')
+                    _git(d, 'commit', '-q', '--allow-empty', '-m', 'init')
+                    git.get_git_info(d, timeout=5.0, cache_ttl=60.0)
+                    # We can't assert about d after it's deleted, so just
+                    # let the loop close the TemporaryDirectory and move on.
+            import json
+            data = json.loads(git.CACHE_FILE.read_text())
+            self.assertLessEqual(len(data['entries']), 3)
+        self.assertEqual(git.MAX_CACHED_CWDS, original_max)
+
+
+class SignatureUnit(unittest.TestCase):
+    def test_returns_none_for_non_repo(self):
+        with TemporaryDirectory() as d:
+            self.assertIsNone(git._signature(d))
+
+    def test_returns_list_for_dir_repo(self):
+        with TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, '.git'))
+            Path(d, '.git', 'HEAD').write_text('ref: refs/heads/main\n')
+            sig = git._signature(d)
+            self.assertIsInstance(sig, list)
+            self.assertEqual(len(sig), 2)
+
+    def test_returns_list_for_worktree_pointer(self):
+        with TemporaryDirectory() as d:
+            Path(d, '.git').write_text('gitdir: /elsewhere\n')
+            sig = git._signature(d)
+            self.assertIsInstance(sig, list)
+            self.assertGreater(sig[0], 0)
 
 
 @unittest.skipUnless(_git_available(), 'git not installed')

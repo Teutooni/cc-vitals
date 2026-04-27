@@ -11,6 +11,43 @@ import tests  # noqa: F401
 import segments
 
 
+def _strip_ansi(s):
+    import re
+    return re.sub(r'\x1b\[[0-9;]*m', '', s)
+
+
+class RenderGitTimeout(unittest.TestCase):
+    """When `get_git_info` returns the timeout sentinel (in a repo, no
+    cache, git timed out), the segment must surface a visible warning
+    rather than render empty."""
+
+    def test_warning_marker_when_timeout(self):
+        info = {
+            'branch': None,
+            'ahead': 0, 'behind': 0,
+            'upstream': False,
+            'added': 0, 'modified': 0, 'deleted': 0,
+            'renamed': 0, 'untracked': 0,
+            'op_state': None,
+            'error': 'timeout',
+        }
+        with mock.patch.object(segments, 'get_git_info', return_value=info):
+            out = segments.render_git(
+                {'cwd': '/tmp/x'},
+                {'icons': 'ascii'},
+                {},
+            )
+        self.assertNotEqual(out, '')
+        plain = _strip_ansi(out)
+        self.assertIn('slow', plain)
+        self.assertIn('?', plain)  # ascii fallback for the timeout glyph
+
+    def test_no_repo_still_renders_empty(self):
+        with mock.patch.object(segments, 'get_git_info', return_value=None):
+            out = segments.render_git({'cwd': '/tmp/x'}, {}, {})
+        self.assertEqual(out, '')
+
+
 class ShortenModelName(unittest.TestCase):
     def test_extracts_token(self):
         self.assertEqual(
