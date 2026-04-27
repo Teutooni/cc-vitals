@@ -6,22 +6,34 @@
 #     source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
 #
 # What this does:
-#   - Adds a second status row (`status 2`) dedicated to cc-vitals so the
-#     existing status bar (window list, status-left/right) is left alone.
-#   - Re-renders that row every second (`status-interval 1`), which is
+#   - Sets three status rows (`status 3`):
+#       row 0 — tmux's default bar (window list, status-left/right). Left
+#               alone so your existing tmux setup keeps working.
+#       row 1 — cc-vitals line 0 (default config: model/effort/cwd/git/env)
+#       row 2 — cc-vitals line 1 (default config: context/limits/tokens/cache)
+#     Each cc-vitals line gets its own row so they don't compete for the
+#     same width — tmux flattens newlines inside `#()` substitution, so
+#     a multi-line cc-vitals payload can't share a single row.
+#   - Re-renders all rows every second (`status-interval 1`), which is
 #     how the cache TTL countdown ticks smoothly.
-#   - Passes the tmux session name to render-tmux.py so multi-session
-#     setups (one CC per repo) route to the right dump file.
+#   - Passes the tmux session name AND a line index to render-tmux.py:
+#     `<slot> 0` for line 1, `<slot> 1` for line 2. Multi-session setups
+#     (one CC per repo) route to the right dump file via session name.
+#   - Overrides the default green status-bar background with black —
+#     tmux ships green and our palette is tuned for a dark backdrop.
 
-set -g status 2
+set -g status 3
+set -g status-style "bg=black,fg=default"
 set -g status-interval 1
-set -g status-format[1] "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}')"
+set -g status-format[1] "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}' 0)"
+set -g status-format[2] "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}' 1)"
 
 # Truecolor support — required for the configured palette to render at
 # full fidelity. Comment out if your outer terminal doesn't advertise RGB.
 set -as terminal-features ",*:RGB"
 
-# Alternative single-row layout: drop `set -g status 2` above and uncomment
-# the line below to merge cc-vitals into the existing status-right instead.
-# Trades multi-line layout for keeping your bar at one row.
-#set -g status-right "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}')"
+# Alternative single-row layout: drop `set -g status 3` and both
+# `status-format[N]` lines above, then uncomment this to merge cc-vitals'
+# first line into your existing status-right. Trades multi-line layout
+# for keeping your existing bar at one row.
+#set -g status-right "#(python3 __PLUGIN_ROOT__/scripts/render-tmux.py '#{session_name}' 0)"

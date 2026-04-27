@@ -115,11 +115,64 @@ class RenderTmuxEntrypoint(unittest.TestCase):
                 'cost': {'total_cost_usd': 0.0},
             })
             env = _isolated_env(home, CC_VITALS_SLOT='myslot')
-            res = _run(_RENDER, env)
+            res = _run(_RENDER, env, argv=('myslot', '0'))
             self.assertEqual(res.returncode, 0, msg=res.stderr)
             # tmux markup, not raw ANSI escapes.
             self.assertIn('#[fg=', res.stdout)
             self.assertNotIn('\x1b[', res.stdout)
+            # Single line — no newlines (tmux flattens them anyway).
+            self.assertNotIn('\n', res.stdout)
+
+    def test_line_index_selects_specific_row(self):
+        with TemporaryDirectory() as d:
+            home = Path(d)
+            transcript = home / 't.jsonl'
+            transcript.write_text('hi')
+            self._seed_dump(home, 'sl', {
+                'session_id': 'sess',
+                'transcript_path': str(transcript),
+                'model': {'display_name': 'TopRowModel'},
+                'cost': {'total_cost_usd': 0.0},
+            })
+            env = _isolated_env(home, CC_VITALS_SLOT='sl')
+            # Default config: line 0 has model+cwd+..., line 1 has
+            # context+limits+tokens+cache. Pick by index.
+            line0 = _run(_RENDER, env, argv=('sl', '0'))
+            line1 = _run(_RENDER, env, argv=('sl', '1'))
+            self.assertIn('TopRowModel', line0.stdout)
+            self.assertNotIn('TopRowModel', line1.stdout)
+            # Cache TTL piece only on line 1 in the default config.
+            import re
+            self.assertRegex(re.sub(r'#\[[^\]]*\]', '', line1.stdout),
+                             r'\d{1,2}:\d{2}')
+            self.assertNotRegex(re.sub(r'#\[[^\]]*\]', '', line0.stdout),
+                                r'\d{1,2}:\d{2}')
+
+    def test_out_of_range_line_index_emits_nothing(self):
+        with TemporaryDirectory() as d:
+            home = Path(d)
+            self._seed_dump(home, 'sl', {
+                'session_id': 'sess',
+                'model': {'display_name': 'X'},
+                'cost': {'total_cost_usd': 0.0},
+            })
+            env = _isolated_env(home, CC_VITALS_SLOT='sl')
+            res = _run(_RENDER, env, argv=('sl', '99'))
+            self.assertEqual(res.returncode, 0, msg=res.stderr)
+            self.assertEqual(res.stdout, '')
+
+    def test_default_line_index_is_zero(self):
+        with TemporaryDirectory() as d:
+            home = Path(d)
+            self._seed_dump(home, 'sl', {
+                'session_id': 'sess',
+                'model': {'display_name': 'TopRowModel'},
+                'cost': {'total_cost_usd': 0.0},
+            })
+            env = _isolated_env(home, CC_VITALS_SLOT='sl')
+            res = _run(_RENDER, env, argv=('sl',))
+            self.assertEqual(res.returncode, 0, msg=res.stderr)
+            self.assertIn('TopRowModel', res.stdout)
 
     def test_argv_slot_takes_precedence(self):
         with TemporaryDirectory() as d:
@@ -135,7 +188,7 @@ class RenderTmuxEntrypoint(unittest.TestCase):
                 'cost': {'total_cost_usd': 0.0},
             })
             env = _isolated_env(home, CC_VITALS_SLOT='env-slot')
-            res = _run(_RENDER, env, argv=('argv-slot',))
+            res = _run(_RENDER, env, argv=('argv-slot', '0'))
             self.assertEqual(res.returncode, 0, msg=res.stderr)
             self.assertIn('FROM-ARGV', res.stdout)
             self.assertNotIn('FROM-ENV', res.stdout)
@@ -144,7 +197,7 @@ class RenderTmuxEntrypoint(unittest.TestCase):
         with TemporaryDirectory() as d:
             home = Path(d)
             env = _isolated_env(home, CC_VITALS_SLOT='ghost')
-            res = _run(_RENDER, env)
+            res = _run(_RENDER, env, argv=('ghost', '0'))
             self.assertEqual(res.returncode, 0, msg=res.stderr)
             self.assertEqual(res.stdout, '')
 
@@ -166,35 +219,10 @@ class RenderTmuxEntrypoint(unittest.TestCase):
             os.utime(sessions / 'older.json', (now - 100, now - 100))
             os.utime(sessions / 'newer.json', (now - 1, now - 1))
             env = _isolated_env(home)
-            res = _run(_RENDER, env)
+            res = _run(_RENDER, env, argv=('', '0'))
             self.assertEqual(res.returncode, 0, msg=res.stderr)
             self.assertIn('NEW', res.stdout)
             self.assertNotIn('OLD', res.stdout)
-
-    def test_default_cache_style_is_countdown(self):
-        with TemporaryDirectory() as d:
-            home = Path(d)
-            transcript = home / 't.jsonl'
-            transcript.write_text('hi')
-            # Default (1h tier) — TTL display should be `mm:ss` form.
-            self._seed_dump(home, 'sl', {
-                'session_id': 'sess',
-                'transcript_path': str(transcript),
-                'model': {'display_name': 'C'},
-                'cost': {'total_cost_usd': 0.0},
-            })
-            env = _isolated_env(home, CC_VITALS_SLOT='sl')
-            res = _run(_RENDER, env)
-            self.assertEqual(res.returncode, 0, msg=res.stderr)
-            # Countdown shows the seconds with a colon and 2-digit pad
-            # (`mm:ss`). The expiry-clock variant would use `HH:MM` with a
-            # 2-digit minute. With a fresh transcript on the 1h tier the
-            # countdown reads ~59:5x — both forms include `:`, so we look
-            # specifically for the `:NN ` pattern at the end of a TTL piece.
-            import re
-            # strip tmux markup blocks for easier regex matching
-            plain = re.sub(r'#\[[^\]]*\]', '', res.stdout)
-            self.assertRegex(plain, r'\d{1,2}:\d{2}')
 
 
 if __name__ == '__main__':

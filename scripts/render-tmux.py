@@ -91,7 +91,19 @@ def _render_lines(data, config, theme):
 
 
 def main():
+    """Emit one cc-vitals line at the requested index.
+
+    Tmux's `#(...)` substitution flattens newlines into the same status
+    row, so we can't ship multi-line output through a single
+    `status-format[N]` directive. Instead, the conf wires one
+    `status-format` row per cc-vitals line and passes the line index as
+    argv[2] — `render-tmux.py <slot> <line-index>`."""
     argv_slot = sys.argv[1] if len(sys.argv) > 1 else None
+    try:
+        line_index = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    except ValueError:
+        line_index = 0
+
     data = _load_dump(argv_slot)
     if not isinstance(data, dict):
         return
@@ -100,9 +112,9 @@ def main():
     _apply_tmux_defaults(config)
     theme = _resolve_theme(config)
     lines = _render_lines(data, config, theme)
-    if not lines:
+    if line_index < 0 or line_index >= len(lines):
         return
-    sys.stdout.write(ansi_to_tmux('\n'.join(lines)))
+    sys.stdout.write(ansi_to_tmux(lines[line_index]))
 
 
 if __name__ == '__main__':
