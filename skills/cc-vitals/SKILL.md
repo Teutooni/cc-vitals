@@ -1,6 +1,6 @@
 ---
 name: statusline
-description: This skill should be used when the user asks to "configure statusline", "change statusline theme", "install statusline", "uninstall statusline", "toggle statusline segment", "edit statusline colors", "show statusline config", "switch to tmux mode", "/statusline", or mentions customizing the Claude Code statusline. Provides an interactive wizard and direct subcommands for the cc-vitals plugin.
+description: This skill should be used when the user asks to "configure statusline", "change statusline theme", "install statusline", "uninstall statusline", "toggle statusline segment", "edit statusline colors", "show statusline config", "switch to tmux mode", "/cc-vitals", or mentions customizing the Claude Code statusline. Provides an interactive wizard and direct subcommands for the cc-vitals plugin.
 argument-hint: "[install | uninstall | mode native|tmux | preset vs-dark-modern|high-contrast|claude-default | toggle <segment> | show | edit]"
 allowed-tools: Read, Edit, Write, Bash, AskUserQuestion
 ---
@@ -168,7 +168,7 @@ Switches rendering mode and rewrites everything that has to follow.
    `"expiry_clock"` (or remove the key if it matches the default).
 4. If `~/.claude/settings.json` already has a `statusLine` block pointing
    at a cc-vitals entrypoint, run the install flow to point it at the new
-   mode's entrypoint. Otherwise inform the user that `/statusline install`
+   mode's entrypoint. Otherwise inform the user that `/cc-vitals install`
    is still required to activate.
 5. For `tmux`, run the "Tmux conf install" flow below.
 6. For `native`, mention the tmux snippet stays in place (no-op when no
@@ -273,7 +273,7 @@ One `AskUserQuestion` with these options:
 - Cancel
 
 Then run the corresponding flow. Cap interaction at two rounds — advise
-`/statusline edit` for deeper tweaks.
+`/cc-vitals edit` for deeper tweaks.
 
 ## Config schema (for reference while editing)
 

@@ -1,6 +1,6 @@
 # cc-vitals tmux config — generated from template at install time.
 # `__PLUGIN_ROOT__` was substituted with the absolute plugin path; do not
-# edit this file by hand. Re-run `/statusline mode tmux` to regenerate.
+# edit this file by hand. Re-run `/cc-vitals mode tmux` to regenerate.
 #
 # Source this from your ~/.tmux.conf:
 #     source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
