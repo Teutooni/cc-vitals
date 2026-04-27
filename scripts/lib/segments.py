@@ -954,8 +954,9 @@ def render_cache(data, config, theme):
     independent of the chosen style.
 
     The cache tier (5m vs 1h) is auto-detected from the latest assistant
-    turn's usage breakdown. `at_risk` uses the most recent turn's
-    cache_read since that represents the value at risk on the next miss.
+    turn's usage breakdown. `at_risk` uses the size of the cached prefix
+    on the most recent turn — that's `max(cache_read, cache_creation)`,
+    since per-turn each cached token lands in exactly one of those buckets.
     """
     cw = data.get('context_window') or {}
     cu = cw.get('current_usage') or {}
@@ -1054,13 +1055,20 @@ def render_cache(data, config, theme):
                     label = f'{glyphs[tier]} {clock}'.strip()
             parts.append(paint(label, _ttl_color(tier, c), theme))
 
-    # at_risk reflects what's at stake on the *next* miss, so it uses the
-    # most recent turn's cache_read (from current_usage), not the session sum.
-    last_cache_read = int((cu or {}).get('cache_read_input_tokens') or 0)
-    if seg.get('show_at_risk', True) and last_cache_read > 0:
+    # at_risk reflects what's at stake on the *next* miss: the size of the
+    # cached prefix right now. Per-turn it lands in either cache_read (hit)
+    # or cache_creation (miss/rebuild) — never both for the same token, so
+    # the larger value is the prefix size. Using just cache_read would
+    # blank the estimate on the rebuild turn, when there's most to lose.
+    cu_d = cu or {}
+    cached_now = max(
+        int(cu_d.get('cache_read_input_tokens') or 0),
+        int(cu_d.get('cache_creation_input_tokens') or 0),
+    )
+    if seg.get('show_at_risk', True) and cached_now > 0:
         model_id = (data.get('model') or {}).get('id')
         ttl_kind = '1h' if ttl_seconds >= 3600 else '5m'
-        risk = at_risk_cost(last_cache_read, model_id, ttl=ttl_kind)
+        risk = at_risk_cost(cached_now, model_id, ttl=ttl_kind)
         min_show = float(seg.get('at_risk_min', 0.01))
         if risk >= min_show:
             parts.append(paint(f'${risk:.2f}', c.get('cache.at_risk', 'muted'), theme))
