@@ -54,10 +54,12 @@ def _prune(data):
     prune_sessions_lru(sessions, MAX_SESSIONS, key='last_seen')
 
 
-def update_and_get(session_id, session_cost):
-    """Record current session cost, roll daily/hourly/monthly totals using a delta
-    against the last recorded value for this session. Returns
-    (session_cost, day_total, month_total)."""
+def ingest_cost(session_id, session_cost):
+    """Record current session cost and roll daily/hourly/monthly totals.
+
+    Mutates persisted state. Call once per CC event (event-driven). Returns
+    the same tuple as `read_cost(session_id)` for callers that want to chain
+    ingest → read in one go (the native render path does this)."""
     now = datetime.now()
     day_key = now.strftime('%Y-%m-%d')
     month_key = now.strftime('%Y-%m')
@@ -94,6 +96,32 @@ def update_and_get(session_id, session_cost):
         float(day.get('total', 0.0)),
         float(months.get(month_key, 0.0) or 0.0),
     )
+
+
+def read_cost(session_id):
+    """Return (last_session_cost, day_total, month_total) without mutating
+    state. Pure read of persisted totals — safe to call from a render loop
+    that runs more often than CC events (e.g. tmux's 1 Hz status bar)."""
+    now = datetime.now()
+    day_key = now.strftime('%Y-%m-%d')
+    month_key = now.strftime('%Y-%m')
+
+    data = _load()
+    sessions = data.get('sessions', {}) or {}
+    days = data.get('days', {}) or {}
+    months = data.get('months', {}) or {}
+
+    last_cost = float((sessions.get(session_id) or {}).get('last_cost', 0.0))
+    raw_today = days.get(day_key)
+    day_total = _normalize_day(raw_today)['total'] if raw_today is not None else 0.0
+    month_total = float(months.get(month_key, 0.0) or 0.0)
+    return last_cost, day_total, month_total
+
+
+def update_and_get(session_id, session_cost):
+    """Back-compat alias: ingest then read. Existing callers (and the test
+    suite) keep working unchanged."""
+    return ingest_cost(session_id, session_cost)
 
 
 def get_projection(window=7, min_expected=0.05, min_days=3):

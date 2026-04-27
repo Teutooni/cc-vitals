@@ -11,7 +11,7 @@ from cache import (
     DEFAULT_TTL_SECONDS,
 )
 from colors import paint, gradient_hex
-from cost import update_and_get, get_projection, get_month_projection
+from cost import read_cost, get_projection, get_month_projection
 from context import get_context_usage
 from env import detect_environment, get_linux_distro
 from git import get_git_info
@@ -488,10 +488,10 @@ def render_env(data, config, theme):
 
 
 def render_cost(data, config, theme):
-    cost_info = data.get('cost') or {}
-    session_cost = cost_info.get('total_cost_usd', 0.0) or 0.0
+    """Read persisted session/day/month totals. State is advanced by the
+    ingest module before render — see scripts/lib/ingest.py."""
     session_id = data.get('session_id') or 'unknown'
-    session, day, month = update_and_get(session_id, session_cost)
+    session, day, month = read_cost(session_id)
     seg = config.get('segments', {}).get('cost', {})
     c = _colors(config)
     icon = _icon(config, 'cost')
@@ -910,6 +910,26 @@ def _resolve_tier_secs(value, ttl_seconds, fallback):
     return int(fallback)
 
 
+def _fmt_countdown(remaining):
+    """`mm:ss` for a countdown display. Used by the `countdown` cache style
+    when a 1 Hz renderer (tmux) ticks the value smoothly. Native mode can't
+    tick a countdown without polling, so it sticks with `expiry_clock`."""
+    secs = max(0, int(remaining))
+    return f'{secs // 60}:{secs % 60:02d}'
+
+
+def _ttl_color(tier, c):
+    """Color token for the TTL label given an urgency tier. Same mapping
+    used by both `expiry_clock` and `countdown` styles."""
+    if tier == 'expired':
+        return c.get('cache.expired', 'error')
+    if tier == 'warn':
+        return c.get('cache.ttl_warn', 'warning')
+    if tier == 'alert':
+        return c.get('cache.ttl_alert', c.get('cache.ttl_warn', 'warning'))
+    return c.get('cache.ttl', 'muted')
+
+
 def render_cache(data, config, theme):
     """Prompt-cache health: hit ratio · expiry clock · $ at risk on miss.
 
@@ -920,12 +940,18 @@ def render_cache(data, config, theme):
     is nearly always 1, so a single turn that rebuilds half the prefix still
     reads ~99% on a per-turn basis. The session view shows true efficiency.
 
-    TTL is shown as the wall-clock expiry time (HH:mm), not a countdown —
-    a sub-second `refreshInterval` corrupts CC's TUI re-renders, but a
-    minute-grained clock works fine at the docs-recommended 60s interval.
-    The PostToolUse hook bumps a per-session marker so long agent turns
-    keep the expiry accurate. Glyph tiers (⏳ → ⏰ <5m → ⚠ <1m → ⚠ expired)
-    convey urgency on each event-driven re-render without any polling.
+    TTL display has two styles:
+      - `expiry_clock` (default): wall-clock expiry time (HH:mm).
+        Minute-grained — robust to CC's event-driven re-renders. Sub-second
+        `refreshInterval` corrupts CC's TUI, so a ticking countdown isn't
+        viable when CC owns the render region.
+      - `countdown`: mm:ss remaining. Only meaningful under a renderer that
+        ticks at sub-minute frequency on its own (tmux's status bar at
+        `status-interval 1`). The PostToolUse hook keeps the underlying
+        epoch fresh during long agent turns regardless of style.
+
+    Glyph tiers (⏳ → ⏰ <alert → ⚠ <warn → ⚠ expired) convey urgency
+    independent of the chosen style.
 
     The cache tier (5m vs 1h) is auto-detected from the latest assistant
     turn's usage breakdown. `at_risk` uses the most recent turn's
@@ -1014,20 +1040,19 @@ def render_cache(data, config, theme):
 
             if tier == 'expired':
                 label = f"{glyphs['expired']} expired"
-                col = c.get('cache.expired', 'error')
             else:
-                expiry = get_cache_expiry_epoch(transcript, ttl_seconds, session_id)
-                tz = _resolve_tz(seg.get('timezone'))
-                clock = _fmt_clock(expiry, tz) if expiry is not None else ''
-                col_keys = {
-                    'warn':  ('cache.ttl_warn', 'warning'),
-                    'alert': ('cache.ttl_alert', c.get('cache.ttl_warn', 'warning')),
-                    'ok':    ('cache.ttl', 'muted'),
-                }
-                key, default = col_keys[tier]
-                col = c.get(key, default)
-                label = f'{glyphs[tier]} {clock}'.strip()
-            parts.append(paint(label, col, theme))
+                # Default to the wall-clock expiry display — minute-grained,
+                # robust to event-driven re-renders. The `countdown` style is
+                # for renderers that tick smoothly on their own (tmux mode).
+                style = seg.get('style', 'expiry_clock')
+                if style == 'countdown':
+                    label = f'{glyphs[tier]} {_fmt_countdown(remaining)}'
+                else:
+                    expiry = get_cache_expiry_epoch(transcript, ttl_seconds, session_id)
+                    tz = _resolve_tz(seg.get('timezone'))
+                    clock = _fmt_clock(expiry, tz) if expiry is not None else ''
+                    label = f'{glyphs[tier]} {clock}'.strip()
+            parts.append(paint(label, _ttl_color(tier, c), theme))
 
     # at_risk reflects what's at stake on the *next* miss, so it uses the
     # most recent turn's cache_read (from current_usage), not the session sum.

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(_HERE, 'lib'))
 
 from colors import THEMES, paint  # noqa: E402
 from config import load_config  # noqa: E402
+from ingest import ingest  # noqa: E402
 from segments import render_segment  # noqa: E402
 from state import DATA_DIR  # noqa: E402
 
@@ -47,6 +48,8 @@ def main():
         data = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
         data = {}
+
+    ingest(data)
 
     config = load_config()
     theme = _resolve_theme(config)

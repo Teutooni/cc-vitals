@@ -444,6 +444,102 @@ class CostForecastSegments(unittest.TestCase):
         self.assertEqual(captured['window'], 14)
 
 
+class FmtCountdown(unittest.TestCase):
+    """`mm:ss` formatter used by the `countdown` cache style."""
+
+    def test_zero(self):
+        self.assertEqual(segments._fmt_countdown(0), '0:00')
+
+    def test_negative_clamped(self):
+        self.assertEqual(segments._fmt_countdown(-30), '0:00')
+
+    def test_under_minute(self):
+        self.assertEqual(segments._fmt_countdown(42), '0:42')
+
+    def test_pads_seconds(self):
+        self.assertEqual(segments._fmt_countdown(65), '1:05')
+
+    def test_full_hour_one_h_tier(self):
+        self.assertEqual(segments._fmt_countdown(3599), '59:59')
+
+    def test_drops_fractional_seconds(self):
+        self.assertEqual(segments._fmt_countdown(125.9), '2:05')
+
+
+class RenderCacheTtlStyle(unittest.TestCase):
+    """The TTL piece picks display style from `segments.cache.style`.
+    Default is `expiry_clock` (HH:mm) for native; `countdown` (mm:ss) is
+    for tmux mode where a 1 Hz renderer ticks the value."""
+
+    def setUp(self):
+        # Use ascii icons + claude-default theme so we get deterministic glyphs.
+        self.theme = segments.__dict__.get('THEMES', None)  # not exposed; build minimal theme
+        self.theme = {
+            'primary': '#FFFFFF', 'secondary': '#FFFFFF', 'accent': '#FFFFFF',
+            'muted': '#888888', 'warning': '#FFFF00', 'error': '#FF0000',
+            'success': '#00FF00', 'dim': '#444444',
+        }
+        self._tmp = TemporaryDirectory()
+        self.transcript = Path(self._tmp.name) / 't.jsonl'
+        self.transcript.write_text('hi')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _data(self):
+        return {
+            'session_id': 'sess-style',
+            'transcript_path': str(self.transcript),
+            # No assistant turns yet — `state.totals.turns` will be 0, hit
+            # ratio shows '—%' and we focus on the TTL piece.
+        }
+
+    def _config(self, **cache_overrides):
+        cache_seg = {
+            'show_hit_ratio': False,
+            'show_at_risk': False,
+            'show_icon': False,
+            'ttl_seconds': 3600,
+        }
+        cache_seg.update(cache_overrides)
+        return {
+            'icons': 'ascii',
+            'segments': {'cache': cache_seg},
+            'colors': {},
+        }
+
+    def test_default_style_is_expiry_clock(self):
+        out = segments.render_cache(self._data(), self._config(), self.theme)
+        plain = _strip_ansi(out)
+        # `HH:MM` clock — exactly one colon, two digits each side.
+        import re
+        self.assertRegex(plain, r'\b\d{2}:\d{2}\b')
+        # Countdown form would be `m:ss` with a single-digit minute on the
+        # 1h cache; the strict 2-digit clock above wouldn't match `0:00`.
+
+    def test_countdown_style_emits_mm_ss(self):
+        out = segments.render_cache(
+            self._data(),
+            self._config(style='countdown'),
+            self.theme,
+        )
+        plain = _strip_ansi(out)
+        # mm:ss with 2-digit seconds, 1+-digit minutes (e.g. `59:59`).
+        import re
+        self.assertRegex(plain, r'\b\d{1,2}:\d{2}\b')
+
+    def test_expired_label_independent_of_style(self):
+        # Stale transcript so remaining ≤ 0.
+        old = 1.0  # epoch=1 → very stale
+        os.utime(self.transcript, (old, old))
+        for style in (None, 'countdown'):
+            cfg = self._config()
+            if style is not None:
+                cfg['segments']['cache']['style'] = style
+            out = segments.render_cache(self._data(), cfg, self.theme)
+            self.assertIn('expired', _strip_ansi(out))
+
+
 class RenderSegmentSwallowsErrors(unittest.TestCase):
     def test_unknown_segment_returns_empty(self):
         self.assertEqual(segments.render_segment('nonexistent', {}, {}, {}), '')
