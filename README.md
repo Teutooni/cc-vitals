@@ -1,5 +1,7 @@
 # cc-vitals
 
+![cc-vitals statusline showing model, cwd, git, env, context, cache, and cost segments](screenshot.png)
+
 Customizable multi-line statusline for Claude Code. Shows at a glance what
 model you're using, where you are, your git state, host environment, rolling
 cost (session / day / month), and context window usage — themed with a
