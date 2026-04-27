@@ -540,6 +540,76 @@ class RenderCacheTtlStyle(unittest.TestCase):
             self.assertIn('expired', _strip_ansi(out))
 
 
+class RenderCacheAtRisk(unittest.TestCase):
+    """`at_risk` shows what's at stake if the prompt cache expires before
+    the next turn. Per-turn each cached token lands in exactly one of
+    cache_read (hit) or cache_creation (miss/rebuild), so the prefix size
+    is `max(read, creation)` — using read alone blanks the segment on the
+    rebuild turn (regression for issue #6)."""
+
+    def setUp(self):
+        self.theme = {
+            'primary': '#FFFFFF', 'secondary': '#FFFFFF', 'accent': '#FFFFFF',
+            'muted': '#888888', 'warning': '#FFFF00', 'error': '#FF0000',
+            'success': '#00FF00', 'dim': '#444444',
+        }
+        self._tmp = TemporaryDirectory()
+        self.transcript = Path(self._tmp.name) / 't.jsonl'
+        self.transcript.write_text('hi')
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _config(self):
+        return {
+            'icons': 'ascii',
+            'segments': {'cache': {
+                'show_hit_ratio': False,
+                'show_ttl': False,
+                'show_icon': False,
+                'show_at_risk': True,
+                'ttl_seconds': 3600,
+            }},
+            'colors': {},
+        }
+
+    def _data(self, current_usage):
+        return {
+            'session_id': 'sess-risk',
+            'transcript_path': str(self.transcript),
+            'model': {'id': 'claude-opus-4-7'},
+            'context_window': {'current_usage': current_usage},
+        }
+
+    def test_shown_on_cache_hit_turn(self):
+        # 100K cache_read on Opus 1h → ~$2.85.
+        data = self._data({'cache_read_input_tokens': 100_000})
+        out = _strip_ansi(segments.render_cache(data, self._config(), self.theme))
+        self.assertIn('$2.85', out)
+
+    def test_shown_on_rebuild_turn_with_only_cache_creation(self):
+        # Right after expiry: read=0, but the rebuild stuffed 100K into
+        # cache_creation. The estimate should still display — what's at
+        # risk on the *next* miss is the freshly-built prefix.
+        data = self._data({
+            'cache_read_input_tokens': 0,
+            'cache_creation_input_tokens': 100_000,
+        })
+        out = _strip_ansi(segments.render_cache(data, self._config(), self.theme))
+        self.assertIn('$2.85', out)
+
+    def test_uses_larger_bucket_when_both_present(self):
+        # max(read, creation), not the sum — they describe the same prefix
+        # split across hit/miss boundaries within one turn.
+        data = self._data({
+            'cache_read_input_tokens': 100_000,
+            'cache_creation_input_tokens': 20_000,
+        })
+        out = _strip_ansi(segments.render_cache(data, self._config(), self.theme))
+        self.assertIn('$2.85', out)
+        self.assertNotIn('$3.42', out)  # would be the sum (120K * 28.5/M)
+
+
 class RenderSegmentSwallowsErrors(unittest.TestCase):
     def test_unknown_segment_returns_empty(self):
         self.assertEqual(segments.render_segment('nonexistent', {}, {}, {}), '')

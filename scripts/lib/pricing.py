@@ -48,16 +48,18 @@ def lookup(model_id):
     return _DEFAULT
 
 
-def at_risk_cost(cache_read_tokens, model_id, ttl='5m'):
+def at_risk_cost(cached_tokens, model_id, ttl='5m'):
     """Estimated extra cost on the next request if the prompt cache expires.
 
-    Cache hit:  next request pays cache_read_price for those tokens.
-    Cache miss: next request pays input_price + cache_write_price (rebuild).
-    Difference per token = input + cache_write - cache_read.
+    Anthropic bills any given token in exactly one of input / cache_read /
+    cache_creation per request — they're mutually exclusive buckets. So:
+      Cache hit:  pays cache_read_price for those tokens.
+      Cache miss: pays cache_write_price (rebuild) — not input + write.
+    Difference per token = cache_write - cache_read.
     """
-    if not cache_read_tokens or cache_read_tokens <= 0:
+    if not cached_tokens or cached_tokens <= 0:
         return 0.0
     p = lookup(model_id)
     write_key = 'cache_write_1h' if ttl == '1h' else 'cache_write_5m'
-    delta_per_mtok = p['input'] + p[write_key] - p['cache_read']
-    return cache_read_tokens * delta_per_mtok / 1_000_000
+    delta_per_mtok = p[write_key] - p['cache_read']
+    return cached_tokens * delta_per_mtok / 1_000_000

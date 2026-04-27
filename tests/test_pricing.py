@@ -37,14 +37,20 @@ class AtRiskCost(unittest.TestCase):
         self.assertEqual(pricing.at_risk_cost(-100, 'claude-sonnet-4'), 0.0)
 
     def test_5m_tier_uses_5m_write_price(self):
-        # Sonnet: input 3.0, write_5m 3.75, read 0.30 → delta = 6.45 / 1M
+        # Sonnet: write_5m 3.75, read 0.30 → delta = 3.45 / 1M
         risk = pricing.at_risk_cost(1_000_000, 'claude-sonnet-4', ttl='5m')
-        self.assertAlmostEqual(risk, 6.45, places=4)
+        self.assertAlmostEqual(risk, 3.45, places=4)
 
     def test_1h_tier_uses_1h_write_price(self):
-        # Sonnet: input 3.0, write_1h 6.0, read 0.30 → delta = 8.70 / 1M
+        # Sonnet: write_1h 6.0, read 0.30 → delta = 5.70 / 1M
         risk = pricing.at_risk_cost(1_000_000, 'claude-sonnet-4', ttl='1h')
-        self.assertAlmostEqual(risk, 8.70, places=4)
+        self.assertAlmostEqual(risk, 5.70, places=4)
+
+    def test_opus_1h_matches_anthropic_billing(self):
+        # Regression for #6: input price must NOT enter the formula.
+        # Opus: write_1h 30.0, read 1.5 → delta = 28.5 / 1M
+        risk = pricing.at_risk_cost(1_000_000, 'claude-opus-4-7', ttl='1h')
+        self.assertAlmostEqual(risk, 28.5, places=4)
 
     def test_unknown_ttl_treated_as_5m(self):
         same = pricing.at_risk_cost(500_000, 'claude-opus-4', ttl='5m')
