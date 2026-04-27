@@ -9,12 +9,16 @@ Vocabulary covered (everything `colors.paint()` ever emits):
   - `\\x1b[0m`              -> `#[default]`
   - `\\x1b[1m`              -> `#[bold]`
   - `\\x1b[2m`              -> `#[dim]`
-  - `\\x1b[38;2;R;G;Bm`     -> `#[fg=#RRGGBB]`
+  - `\\x1b[38;2;R;G;Bm`     -> `#[fg=##RRGGBB]`
 
-Literal `#` in payload is doubled to `##` so tmux doesn't try to parse it
-as the start of a format directive. Unrecognized SGR parameters and
-malformed escapes are dropped silently — better a missing color than a
-broken status bar.
+The `#` in hex colors is doubled — tmux re-parses our output through
+`#(…)` substitution, and a single `#` followed by a directive letter
+(`#D` = pane_id, `#F` = pane flags, etc.) gets expanded mid-color, so
+`#[fg=#DCDCAA]` would arrive as `#[fg=<pane_id>CDCAA]` and silently drop
+the fg. `##` is the format-string escape for a literal `#`, applied both
+to payload text and to the color values we emit. Unrecognized SGR
+parameters and malformed escapes are dropped silently — better a
+missing color than a broken status bar.
 """
 import re
 
@@ -51,7 +55,9 @@ def _sgr_to_tmux(params):
                 i += 5
                 continue
             if 0 <= r <= 255 and 0 <= g <= 255 and 0 <= b <= 255:
-                fg = '#{:02X}{:02X}{:02X}'.format(r, g, b)
+                # Double the `#` so tmux's format parser treats it as a
+                # literal rather than the start of a directive (e.g. `#D`).
+                fg = '##{:02X}{:02X}{:02X}'.format(r, g, b)
             i += 5
         else:
             i += 1
