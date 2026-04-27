@@ -134,14 +134,27 @@ def gradient_hex(frac, theme, stops=('success', 'warning', 'error')):
 def paint(text, color_token, theme, bold=False, dim=False):
     if not text:
         return ''
-    color = resolve_color(color_token, theme)
+    prefix = ansi_prefix(color_token, theme, bold=bold, dim=dim)
+    if not prefix:
+        return text
+    return f'{prefix}{text}{RESET}'
+
+
+def ansi_prefix(color_token, theme, bold=False, dim=False):
+    """SGR prefix for the given styling, paired with module-level RESET.
+
+    Used when a renderer needs to wrap dynamically-computed text — e.g. the
+    tmux-mode host-side ticker formats live mm:ss strings and wraps each
+    one in its tier's prefix. Splitting prefix from text lets the manifest
+    carry per-tier prefixes once instead of per-tick painted templates."""
+    if _NO_COLOR:
+        return ''
     prefix = ''
     if bold:
         prefix += BOLD
     if dim:
         prefix += DIM
+    color = resolve_color(color_token, theme)
     if color:
         prefix += _fg(color)
-    if not prefix:
-        return text
-    return f'{prefix}{text}{RESET}'
+    return prefix

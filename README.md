@@ -74,21 +74,7 @@ Switch with `/cc-vitals mode tmux` (or `mode native`).
 
 ### Tmux mode setup
 
-`/cc-vitals mode tmux` writes a per-user conf at
-`~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf` with absolute paths
-already substituted. Add this line to `~/.tmux.conf`:
-
-```tmux
-source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
-```
-
-The snippet adds two status rows for cc-vitals beneath your existing tmux
-bar (window list, status-left/right untouched), enables truecolor, and
-turns on mouse mode so wheel-up scrolls the chat. A commented
-`status-right` alternative inside the file lets you keep a single row
-instead.
-
-Launch CC through the wrapper so each session routes to its own status:
+Run `/cc-vitals mode tmux`, then launch CC through the `cct` wrapper:
 
 ```sh
 cct                        # fresh CC in a fresh tmux session
@@ -97,6 +83,12 @@ cct --resume               # interactive picker
 cct --model opus           # any flag claude accepts
 ```
 
+`cct` runs tmux on its own dedicated socket (`-L cc-vitals`) loading the
+plugin's static config (`tmux/cc-vitals.tmux.conf`). That keeps the
+cc-vitals tmux server fully **isolated from your personal `~/.tmux.conf`**
+— no edits required, no risk of conflicting with your existing
+keybindings or status bar.
+
 The wrapper is at `$CLAUDE_PLUGIN_ROOT/bin/cct` — symlink it into PATH or
 paste this into `~/.bashrc`:
 
@@ -104,8 +96,50 @@ paste this into `~/.bashrc`:
 cct() { "$CLAUDE_PLUGIN_ROOT/bin/cct" "$@"; }
 ```
 
-Several `cct` instances can run side by side, each with its own slot and
-status bar.
+Several `cct` instances can run side by side, each with its own
+randomized 8-hex slot and its own status bar.
+
+#### Producer / consumer split
+
+`ingest.py` (running wherever CC runs) renders the full statusline at
+each CC event and publishes a per-line manifest to
+`$CC_VITALS_DUMP_DIR/<slot>.line<n>.json`. `tick.py` (running on the host
+under tmux's 1 Hz `status-format` substitution) reads the manifest and
+emits already-rendered tmux markup; the only piece formatted live is the
+cache TTL countdown (so it ticks smoothly without re-rendering the rest
+of the line). All other state — transcript paths, theme machinery, cache
+totals — lives entirely on the producer side.
+
+This split makes the host/container case trivial:
+
+```sh
+# Bind-mount the published-manifest directory into the container, then
+# launch CC inside it through cct:
+docker run --rm -d --name myctr \
+  -v ~/.claude/plugin-data/cc-vitals/published:/cc-vitals-published \
+  -e CC_VITALS_DUMP_DIR=/cc-vitals-published \
+  myimage sleep infinity
+
+cct --exec 'docker exec -it -e CC_VITALS_SLOT="$CC_VITALS_SLOT" \
+    -e CC_VITALS_DUMP_DIR=/cc-vitals-published myctr claude'
+```
+
+The plugin must be installed on **both** sides (host runs `tick.py`,
+container runs `ingest.py`). They share only the bind-mounted manifest
+directory — no shared cache state, no host/container drift.
+
+#### Personal tmux config (advanced, optional)
+
+Because `cct` uses `-L cc-vitals -f`, your `~/.tmux.conf` is **not**
+sourced inside the cc-vitals tmux session. If you want your keybindings,
+copy-mode prefs, etc., uncomment the last line of
+`$CLAUDE_PLUGIN_ROOT/tmux/cc-vitals.tmux.conf`:
+
+```tmux
+source-file -q ~/.tmux.conf
+```
+
+Skip this if you're not sure — everything else works without it.
 
 ---
 
@@ -201,10 +235,13 @@ OS.
 |-------------------------|----------------------------------------------------------------|
 | `CC_VITALS_DEBUG=1`     | re-raise segment exceptions instead of rendering blank         |
 | `CC_VITALS_THEME=<name>`| override theme for the current process                         |
-| `CC_VITALS_DUMP=1`      | write raw CC stdin to `~/.claude/plugin-data/cc-vitals/last-stdin.json` |
+| `CC_VITALS_DUMP=1`      | (native mode) write raw CC stdin to `~/.claude/plugin-data/cc-vitals/last-stdin.json` |
+| `CC_VITALS_DUMP_DIR`    | (tmux mode) override where ingest publishes manifests; defaults to `~/.claude/plugin-data/cc-vitals/published/`. Set this to a bind-mounted path to bridge a container/host boundary. |
+| `CC_VITALS_SLOT`        | (tmux mode) per-CC routing key. Set automatically by the `cct` wrapper to `<cwd-basename>-<8-hex>`; tmux uses `#{session_name}` to read the matching manifest. Set explicitly when running outside `cct`. |
 
-The dump may include session-identifying data (transcript path, session
-id) — delete when done.
+The native-mode dump may include session-identifying data (transcript
+path, session id) — delete when done. To inspect a tmux-mode published
+manifest: `cat ~/.claude/plugin-data/cc-vitals/published/<slot>.line0.json | jq .`.
 
 ## Tests
 

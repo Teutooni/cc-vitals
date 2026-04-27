@@ -19,11 +19,23 @@ cc-vitals supports two rendering modes; the user picks one per machine.
   `scripts/statusline.py` and CC re-renders the bar event-driven. No
   external dependencies. Cache TTL shows the wall-clock expiry time
   (HH:mm) — minute-grained, robust to event-driven re-renders.
-- **`tmux`**: CC's `statusLine` runs `scripts/ingest.py` (mutates state,
-  dumps stdin, prints nothing). tmux's status bar runs
-  `scripts/render-tmux.py` every second and paints the line itself.
-  Cache TTL ticks live as a `mm:ss` countdown. Multi-CC routing handled
-  via `CC_VITALS_SLOT` (one tmux session per CC). Requires `tmux ≥ 3.2`.
+- **`tmux`**: CC's `statusLine` runs `scripts/ingest.py`. ingest applies
+  state mutations (cost, cache aggregates) and publishes a per-line
+  manifest to `$CC_VITALS_DUMP_DIR/<slot>.line<n>.json`. tmux's status
+  bar runs `scripts/tick.py` every second; tick reads the manifest,
+  formats any live items (currently just the cache TTL countdown) at
+  the current wall-clock time, and emits tmux markup. The producer
+  (ingest) and consumer (tick) communicate only through the published
+  directory — which can be a bind mount so CC can run inside a container
+  while tmux runs on the host. Multi-CC routing via `CC_VITALS_SLOT`
+  (one tmux session per CC). Requires `tmux ≥ 3.2`.
+
+  Slot id is `<cwd-basename>-<8-hex>` by default (`cct` wrapper picks
+  it). The `cct` wrapper launches tmux with `-L cc-vitals -f
+  $CLAUDE_PLUGIN_ROOT/tmux/cc-vitals.tmux.conf` so the cc-vitals tmux
+  server is fully isolated from the user's personal tmux — no edits to
+  `~/.tmux.conf` are required and the user's own keybindings are not
+  inherited inside the cc-vitals tmux session.
 
 ## Resolving the plugin root
 
@@ -144,13 +156,12 @@ are preserved verbatim.
    a customized entry without explicit confirmation.
 4. On confirm: remove the `statusLine` key from the settings object,
    validate, and atomic-write.
-5. Leave `~/.claude/statusline.json`, cost data, and the tmux conf snippet
-   (if any) in place. Mention each path in the final message so the user
-   knows where to delete them if desired:
+5. Leave `~/.claude/statusline.json` and cost data in place. Mention
+   each path in the final message so the user knows where to delete
+   them if desired:
    - `~/.claude/statusline.json` — plugin config / mode
-   - `~/.claude/plugin-data/cc-vitals/` — cost history, dumps, cache state
-   - `~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf` — tmux snippet
-     (and the `source-file` line in `~/.tmux.conf`, if added).
+   - `~/.claude/plugin-data/cc-vitals/` — cost history, cache state,
+     published manifests
 
 ## Mode flow
 
@@ -163,50 +174,88 @@ Switches rendering mode and rewrites everything that has to follow.
    ```
    Refuse with a link to install instructions if missing.
 3. Atomic-write `~/.claude/statusline.json` with `config["mode"] = <name>`.
-   For `tmux`, also set `config["segments"]["cache"]["style"] = "countdown"`
-   unless the user already pinned a style; for `native`, set it to
-   `"expiry_clock"` (or remove the key if it matches the default).
+   No need to set `cache.style` here — `ingest.py` applies the countdown
+   default for tmux mode automatically (it's the tmux-mode entrypoint).
 4. If `~/.claude/settings.json` already has a `statusLine` block pointing
    at a cc-vitals entrypoint, run the install flow to point it at the new
    mode's entrypoint. Otherwise inform the user that `/cc-vitals install`
    is still required to activate.
-5. For `tmux`, run the "Tmux conf install" flow below.
-6. For `native`, mention the tmux snippet stays in place (no-op when no
-   CC dumps state) and offer to print the line to remove from
-   `~/.tmux.conf` if the user is done with tmux mode.
+5. For `tmux`, run the "Tmux setup" flow below.
+6. For `native`, no further action is needed — there's nothing to clean
+   up since we no longer materialize a tmux conf or touch the user's
+   `~/.tmux.conf`.
 
-## Tmux conf install
+## Tmux setup
 
-The shipped template at `$CLAUDE_PLUGIN_ROOT/tmux/cc-vitals.conf.template`
-uses `__PLUGIN_ROOT__` placeholders. Materialize a per-user copy with
-absolute paths so tmux can find the render script.
+Nothing materializes anywhere on disk — the static
+`$CLAUDE_PLUGIN_ROOT/tmux/cc-vitals.tmux.conf` ships in the plugin and is
+loaded directly by the `cct` wrapper. `cct` runs tmux on its own dedicated
+socket (`-L cc-vitals`), so the user's personal `~/.tmux.conf` is **not**
+inherited.
 
-1. Build the substituted contents in a bash heredoc and write to
-   `~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf`:
-   ```bash
-   PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
-   DEST="$HOME/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf"
-   mkdir -p "$(dirname "$DEST")"
-   sed "s|__PLUGIN_ROOT__|$PLUGIN_ROOT|g" \
-     "$PLUGIN_ROOT/tmux/cc-vitals.conf.template" > "$DEST.tmp"
-   mv "$DEST.tmp" "$DEST"
+1. Suggest the user expose `cct` on PATH. Two equivalent forms:
+   ```sh
+   # Symlink (one-shot):
+   ln -s "$CLAUDE_PLUGIN_ROOT/bin/cct" ~/.local/bin/cct
+
+   # Or shell function in ~/.bashrc / ~/.zshrc (preserves $CLAUDE_PLUGIN_ROOT
+   # only inside the function — works after `claude` has set it once):
+   cct() { "$CLAUDE_PLUGIN_ROOT/bin/cct" "$@"; }
    ```
-2. Tell the user to add this line to `~/.tmux.conf`:
-   ```tmux
-   source-file ~/.claude/plugin-data/cc-vitals/cc-vitals.tmux.conf
+2. (Optional, advanced) Ask via `AskUserQuestion` whether to layer the
+   user's personal tmux config inside the cc-vitals tmux session. **Make
+   it clear this is safe to skip.**
+   - If yes: tell them to uncomment the `source-file -q ~/.tmux.conf`
+     line at the bottom of `$CLAUDE_PLUGIN_ROOT/tmux/cc-vitals.tmux.conf`
+     in their own copy. We do **not** edit the shipped file ourselves
+     (it's part of the plugin and would be overwritten on update).
+     Direct them to copy the conf to `~/.config/cc-vitals/tmux.conf` and
+     point `cct` at it via a wrapper if they want a stable override.
+   - If no / unsure: skip.
+3. (If the user mentions running CC inside a container) Print the
+   container workflow snippet from "Container workflow" below.
+4. Tell the user any currently-running tmux sessions will not pick up
+   the new mode — they need to `cct` a fresh session to see the bar.
+
+## Container workflow
+
+cc-vitals supports running CC inside a container while tmux renders on
+the host. Producer (ingest + render) runs in the container; consumer
+(tick.py) runs on the host. They communicate through a single
+bind-mounted directory of small JSON manifest files — no shared state,
+no host/container cache split.
+
+Setup:
+
+1. Install the plugin on **both** host and container. Both sides need
+   the python `scripts/lib/` modules; the host runs `scripts/tick.py`
+   and the container runs `scripts/ingest.py`.
+2. Pick a path the host can write and the container can read/write.
+   Default suggestion: `~/.claude/plugin-data/cc-vitals/published`. Bind
+   mount it into the container at any path:
+   ```sh
+   docker run --rm -it \
+     -v ~/.claude/plugin-data/cc-vitals/published:/cc-vitals-published \
+     -e CC_VITALS_DUMP_DIR=/cc-vitals-published \
+     myimage bash
    ```
-   Use `AskUserQuestion` to optionally append it for them. If appending,
-   first check the line isn't already present (`grep -F`).
-3. Print the launch instructions:
-   - `cct` wrapper at `$CLAUDE_PLUGIN_ROOT/bin/cct` — symlink into PATH
-     or paste the function form into `~/.bashrc`/`~/.zshrc`:
-     ```sh
-     cct() { "$CLAUDE_PLUGIN_ROOT/bin/cct" "$@"; }
-     ```
-   - Manual form: `tmux new-session -s <slot> "claude $@"` (no slot
-     routing without `cct`; mtime fallback applies).
-4. Mention that an existing tmux session won't pick up the conf changes
-   automatically — `tmux source-file ~/.tmux.conf` to reload.
+3. From the host, launch the cc-vitals tmux session with `cct --exec`
+   pointing at a `docker exec`-style command that lands in the container
+   running CC. The slot env var must propagate so the manifest gets
+   written under the matching slot name:
+   ```sh
+   cct --exec 'docker exec -it -e CC_VITALS_SLOT="$CC_VITALS_SLOT" \
+       -e CC_VITALS_DUMP_DIR=/cc-vitals-published myctr claude'
+   ```
+   `cct` exports `CC_VITALS_SLOT` and `CC_VITALS_DUMP_DIR` (if set) into
+   the new tmux session's env. The host-side tick reads from the same
+   `CC_VITALS_DUMP_DIR` (set on the host before `cct`, or via the
+   shipped default).
+4. Multi-instance: works as-is. Each `cct` invocation gets a unique
+   8-hex slot suffix. Run as many concurrent `cct` sessions on the host
+   as you like, mixing host-CC and container-CC instances — each tmux
+   session shows the right telemetry because `#{session_name}` is the
+   routing key end to end.
 
 ## Preset flow
 
@@ -289,6 +338,9 @@ Then run the corresponding flow. Cap interaction at two rounds — advise
     "git":  { "dirty_glyph": "●", "ahead_glyph": "↑", "behind_glyph": "↓" },
     "cost": { "show_session": true, "show_day": true, "show_month": true },
     "cache": { "style": "expiry_clock" | "countdown" }
+    /* ingest.py forces 'countdown' as the default in tmux mode; native
+       mode keeps 'expiry_clock'. Set this explicitly only if you want
+       to override. */
   },
   "colors": {
     "model": "accent", "cwd": "primary",

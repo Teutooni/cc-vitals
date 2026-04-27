@@ -16,6 +16,13 @@ from context import get_context_usage
 from env import detect_environment, get_linux_distro
 from git import get_git_info
 from pricing import at_risk_cost
+from render import (
+    TTL_GLYPH_DEFAULTS as _TTL_GLYPH_DEFAULTS,
+    fmt_clock as _fmt_clock,
+    fmt_countdown as _fmt_countdown,
+    render_ttl_label,
+    ttl_tier as _ttl_tier,
+)
 
 
 # Nerd-font glyphs by codepoint. See https://www.nerdfonts.com/cheat-sheet
@@ -855,39 +862,6 @@ def _resolve_tz(tz_config):
         return None
 
 
-def _fmt_clock(epoch_seconds, tz=None):
-    """HH:mm at the given tzinfo (or system-local if ``tz is None``).
-
-    Used to show *when* the cache expires rather than a live countdown
-    — minute-grained clocks survive low-frequency statusline refreshes
-    (CC's docs explicitly endorse this for time data). The tz hook lets
-    a UTC container display the host's wall-clock time."""
-    if tz is None:
-        return _time.strftime('%H:%M', _time.localtime(epoch_seconds))
-    from datetime import datetime
-    return datetime.fromtimestamp(epoch_seconds, tz).strftime('%H:%M')
-
-
-# Glyph tier thresholds (seconds remaining). Picked so that each event-driven
-# CC re-render conveys urgency passively — no polling required.
-_TTL_GLYPH_DEFAULTS = {
-    'ok':      '⏳',
-    'alert':   '⏰',
-    'warn':    '⚠',
-    'expired': '⚠',
-}
-
-
-def _ttl_tier(remaining, alert_secs, warn_secs):
-    if remaining <= 0:
-        return 'expired'
-    if remaining < warn_secs:
-        return 'warn'
-    if remaining < alert_secs:
-        return 'alert'
-    return 'ok'
-
-
 def _tier_key(ttl_seconds):
     """Map a TTL window to a config key. Anything ≥1h is treated as '1h',
     anything ≤5m as '5m'; values in between fall back to the larger key."""
@@ -910,14 +884,6 @@ def _resolve_tier_secs(value, ttl_seconds, fallback):
     return int(fallback)
 
 
-def _fmt_countdown(remaining):
-    """`mm:ss` for a countdown display. Used by the `countdown` cache style
-    when a 1 Hz renderer (tmux) ticks the value smoothly. Native mode can't
-    tick a countdown without polling, so it sticks with `expiry_clock`."""
-    secs = max(0, int(remaining))
-    return f'{secs // 60}:{secs % 60:02d}'
-
-
 def _ttl_color(tier, c):
     """Color token for the TTL label given an urgency tier. Same mapping
     used by both `expiry_clock` and `countdown` styles."""
@@ -928,6 +894,167 @@ def _ttl_color(tier, c):
     if tier == 'alert':
         return c.get('cache.ttl_alert', c.get('cache.ttl_warn', 'warning'))
     return c.get('cache.ttl', 'muted')
+
+
+def _ttl_thresholds(seg, ttl_seconds):
+    """Resolve (alert_secs, warn_secs) tier thresholds from the cache segment
+    config. 5-min cache shrinks the warning windows proportionally — alerting
+    at "5 min remaining" on a 5-min cache means always alert."""
+    alert_default = 60 if ttl_seconds <= 300 else 300
+    warn_default = 15 if ttl_seconds <= 300 else 60
+    alert_secs = _resolve_tier_secs(
+        seg.get('ttl_alert_seconds'), ttl_seconds, alert_default,
+    )
+    warn_secs = _resolve_tier_secs(
+        seg.get('ttl_warn_seconds'), ttl_seconds, warn_default,
+    )
+    return alert_secs, warn_secs
+
+
+def _ttl_glyphs(seg):
+    """Resolve the per-tier glyph map for the cache segment. Layers a user
+    `ttl_glyphs` dict over defaults, with a single-glyph `ttl_glyph` as a
+    back-compat shortcut that overrides the 'ok' tier only."""
+    glyphs = dict(_TTL_GLYPH_DEFAULTS)
+    user_glyphs = seg.get('ttl_glyphs')
+    if isinstance(user_glyphs, dict):
+        glyphs.update({k: v for k, v in user_glyphs.items() if isinstance(v, str)})
+    single = seg.get('ttl_glyph')
+    if isinstance(single, str):
+        glyphs['ok'] = single
+    return glyphs
+
+
+def cache_context(data, config):
+    """Compute the shared context dict used by all cache-segment renderers.
+
+    Native mode (`render_cache`) and tmux mode (`render.build_cache_items`)
+    both consume this. Returns totals (or None), detected tier, the cache
+    segment config block, color tokens, the icon string, and the resolved
+    `ttl_seconds` (override → auto-detect → 1h fallback)."""
+    cw = data.get('context_window') or {}
+    cu = cw.get('current_usage') or {}
+    transcript = data.get('transcript_path')
+    session_id = data.get('session_id')
+
+    state = get_session_cache_state(transcript, session_id)
+    if state and state['totals']['turns'] > 0:
+        totals = state['totals']
+        detected_tier = state['tier_seconds']
+    elif cu:
+        # No transcript yet (very early in session) — fall back to current_usage.
+        totals = {
+            'cache_read': int(cu.get('cache_read_input_tokens') or 0),
+            'input_tokens': int(cu.get('input_tokens') or 0),
+            'cache_creation': int(cu.get('cache_creation_input_tokens') or 0),
+            'turns': 1,
+        }
+        detected_tier = None
+    else:
+        totals = None
+        detected_tier = None
+
+    seg = config.get('segments', {}).get('cache', {})
+    c = _colors(config)
+    icon = _icon(config, 'cache') if seg.get('show_icon', True) else ''
+
+    ttl_override = seg.get('ttl_seconds')
+    if ttl_override is not None:
+        ttl_seconds = int(ttl_override)
+    else:
+        ttl_seconds = detected_tier or DEFAULT_TTL_SECONDS
+
+    return {
+        'data': data,
+        'cu': cu,
+        'transcript': transcript,
+        'session_id': session_id,
+        'totals': totals,
+        'seg': seg,
+        'c': c,
+        'icon': icon,
+        'ttl_seconds': ttl_seconds,
+    }
+
+
+def cache_hit_part(ctx, theme):
+    """Painted hit-ratio piece (or '' if disabled). The icon attaches here
+    because the hit ratio is the conventional first part of the segment."""
+    seg = ctx['seg']
+    c = ctx['c']
+    if not seg.get('show_hit_ratio', True):
+        return ''
+    icon = ctx['icon']
+    totals = ctx['totals']
+    denom = 0
+    if totals:
+        denom = totals['cache_read'] + totals['input_tokens'] + totals['cache_creation']
+    if denom > 0:
+        hit = totals['cache_read'] / denom
+        hit_pct = int(round(hit * 100))
+        warn_below = int(seg.get('hit_warn_below', 70))
+        crit_below = int(seg.get('hit_crit_below', 30))
+        if hit_pct < crit_below:
+            col = c.get('cache.hit_crit', 'error')
+        elif hit_pct < warn_below:
+            col = c.get('cache.hit_low', 'warning')
+        else:
+            col = c.get('cache.hit_high', 'success')
+        label = f'{icon} {hit_pct}%' if icon else f'{hit_pct}%'
+    else:
+        col = 'muted'
+        label = f'{icon} —%' if icon else '—%'
+    return paint(label, col, theme)
+
+
+def cache_ttl_part(ctx, theme):
+    """Painted TTL piece (or '' if disabled / no data). Used by native mode;
+    tmux mode emits a live_ttl manifest item instead so the host-side ticker
+    can re-format mm:ss every second."""
+    seg = ctx['seg']
+    if not seg.get('show_ttl', True):
+        return ''
+    transcript = ctx['transcript']
+    session_id = ctx['session_id']
+    ttl_seconds = ctx['ttl_seconds']
+    remaining = get_cache_ttl_remaining(transcript, ttl_seconds, session_id)
+    if remaining is None:
+        return ''
+    alert_secs, warn_secs = _ttl_thresholds(seg, ttl_seconds)
+    glyphs = _ttl_glyphs(seg)
+    style = seg.get('style', 'expiry_clock')
+    expiry = get_cache_expiry_epoch(transcript, ttl_seconds, session_id)
+    tz = _resolve_tz(seg.get('timezone'))
+    label, tier = render_ttl_label(
+        remaining, expiry, style, alert_secs, warn_secs, glyphs, tz,
+    )
+    return paint(label, _ttl_color(tier, ctx['c']), theme)
+
+
+def cache_at_risk_part(ctx, theme):
+    """Painted at_risk piece (or '' if disabled / below threshold).
+
+    Reflects what's at stake on the *next* miss: the size of the cached
+    prefix right now. Per-turn it lands in either cache_read (hit) or
+    cache_creation (miss/rebuild) — never both for the same token — so the
+    larger value is the prefix size. Using just cache_read would blank the
+    estimate on the rebuild turn, when there's most to lose."""
+    seg = ctx['seg']
+    cu_d = ctx['cu'] or {}
+    cached_now = max(
+        int(cu_d.get('cache_read_input_tokens') or 0),
+        int(cu_d.get('cache_creation_input_tokens') or 0),
+    )
+    if not seg.get('show_at_risk', True) or cached_now <= 0:
+        return ''
+    model_id = (ctx['data'].get('model') or {}).get('id')
+    ttl_seconds = ctx['ttl_seconds']
+    ttl_kind = '1h' if ttl_seconds >= 3600 else '5m'
+    risk = at_risk_cost(cached_now, model_id, ttl=ttl_kind)
+    min_show = float(seg.get('at_risk_min', 0.01))
+    if risk < min_show:
+        return ''
+    return paint(f'${risk:.2f}', ctx['c'].get('cache.at_risk', 'muted'), theme)
 
 
 def render_cache(data, config, theme):
@@ -955,125 +1082,15 @@ def render_cache(data, config, theme):
 
     The cache tier (5m vs 1h) is auto-detected from the latest assistant
     turn's usage breakdown. `at_risk` uses the size of the cached prefix
-    on the most recent turn — that's `max(cache_read, cache_creation)`,
-    since per-turn each cached token lands in exactly one of those buckets.
+    on the most recent turn.
     """
-    cw = data.get('context_window') or {}
-    cu = cw.get('current_usage') or {}
-    transcript = data.get('transcript_path')
-    session_id = data.get('session_id')
-
-    state = get_session_cache_state(transcript, session_id)
-    if state and state['totals']['turns'] > 0:
-        totals = state['totals']
-        detected_tier = state['tier_seconds']
-    elif cu:
-        # No transcript yet (very early in session) — fall back to current_usage.
-        totals = {
-            'cache_read': int(cu.get('cache_read_input_tokens') or 0),
-            'input_tokens': int(cu.get('input_tokens') or 0),
-            'cache_creation': int(cu.get('cache_creation_input_tokens') or 0),
-            'turns': 1,
-        }
-        detected_tier = None
-    else:
-        totals = None
-        detected_tier = None
-
-    seg = config.get('segments', {}).get('cache', {})
-    c = _colors(config)
-    icon = _icon(config, 'cache') if seg.get('show_icon', True) else ''
-
-    # TTL resolution: explicit user override → auto-detect → 1h fallback.
-    ttl_override = seg.get('ttl_seconds')
-    if ttl_override is not None:
-        ttl_seconds = int(ttl_override)
-    else:
-        ttl_seconds = detected_tier or DEFAULT_TTL_SECONDS
-
-    parts = []
-
-    if seg.get('show_hit_ratio', True):
-        denom = 0
-        if totals:
-            denom = totals['cache_read'] + totals['input_tokens'] + totals['cache_creation']
-        if denom > 0:
-            hit = totals['cache_read'] / denom
-            hit_pct = int(round(hit * 100))
-            warn_below = int(seg.get('hit_warn_below', 70))
-            crit_below = int(seg.get('hit_crit_below', 30))
-            if hit_pct < crit_below:
-                col = c.get('cache.hit_crit', 'error')
-            elif hit_pct < warn_below:
-                col = c.get('cache.hit_low', 'warning')
-            else:
-                col = c.get('cache.hit_high', 'success')
-            label = f'{icon} {hit_pct}%' if icon else f'{hit_pct}%'
-        else:
-            col = 'muted'
-            label = f'{icon} —%' if icon else '—%'
-        parts.append(paint(label, col, theme))
-        icon = ''  # only attach to first piece
-
-    if seg.get('show_ttl', True):
-        remaining = get_cache_ttl_remaining(transcript, ttl_seconds, session_id)
-        if remaining is not None:
-            # 5m cache shrinks the warning windows proportionally — alerting at
-            # "5 min remaining" on a 5-min cache means always alert.
-            alert_default = 60 if ttl_seconds <= 300 else 300
-            warn_default = 15 if ttl_seconds <= 300 else 60
-            alert_secs = _resolve_tier_secs(
-                seg.get('ttl_alert_seconds'), ttl_seconds, alert_default,
-            )
-            warn_secs = _resolve_tier_secs(
-                seg.get('ttl_warn_seconds'), ttl_seconds, warn_default,
-            )
-            tier = _ttl_tier(remaining, alert_secs, warn_secs)
-            glyphs = dict(_TTL_GLYPH_DEFAULTS)
-            user_glyphs = seg.get('ttl_glyphs')
-            if isinstance(user_glyphs, dict):
-                glyphs.update({k: v for k, v in user_glyphs.items() if isinstance(v, str)})
-            # Single-glyph back-compat: a string `ttl_glyph` overrides the
-            # 'ok' tier without forcing users to expand the full map.
-            single = seg.get('ttl_glyph')
-            if isinstance(single, str):
-                glyphs['ok'] = single
-
-            if tier == 'expired':
-                label = f"{glyphs['expired']} expired"
-            else:
-                # Default to the wall-clock expiry display — minute-grained,
-                # robust to event-driven re-renders. The `countdown` style is
-                # for renderers that tick smoothly on their own (tmux mode).
-                style = seg.get('style', 'expiry_clock')
-                if style == 'countdown':
-                    label = f'{glyphs[tier]} {_fmt_countdown(remaining)}'
-                else:
-                    expiry = get_cache_expiry_epoch(transcript, ttl_seconds, session_id)
-                    tz = _resolve_tz(seg.get('timezone'))
-                    clock = _fmt_clock(expiry, tz) if expiry is not None else ''
-                    label = f'{glyphs[tier]} {clock}'.strip()
-            parts.append(paint(label, _ttl_color(tier, c), theme))
-
-    # at_risk reflects what's at stake on the *next* miss: the size of the
-    # cached prefix right now. Per-turn it lands in either cache_read (hit)
-    # or cache_creation (miss/rebuild) — never both for the same token, so
-    # the larger value is the prefix size. Using just cache_read would
-    # blank the estimate on the rebuild turn, when there's most to lose.
-    cu_d = cu or {}
-    cached_now = max(
-        int(cu_d.get('cache_read_input_tokens') or 0),
-        int(cu_d.get('cache_creation_input_tokens') or 0),
-    )
-    if seg.get('show_at_risk', True) and cached_now > 0:
-        model_id = (data.get('model') or {}).get('id')
-        ttl_kind = '1h' if ttl_seconds >= 3600 else '5m'
-        risk = at_risk_cost(cached_now, model_id, ttl=ttl_kind)
-        min_show = float(seg.get('at_risk_min', 0.01))
-        if risk >= min_show:
-            parts.append(paint(f'${risk:.2f}', c.get('cache.at_risk', 'muted'), theme))
-
-    return ' · '.join(parts)
+    ctx = cache_context(data, config)
+    parts = [
+        cache_hit_part(ctx, theme),
+        cache_ttl_part(ctx, theme),
+        cache_at_risk_part(ctx, theme),
+    ]
+    return ' · '.join(p for p in parts if p)
 
 
 RENDERERS = {

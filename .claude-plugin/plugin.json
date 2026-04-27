@@ -1,6 +1,6 @@
 {
   "name": "cc-vitals",
-  "version": "1.5.1",
+  "version": "1.6.0",
   "description": "Customizable multi-line statusline for Claude Code with git, environment, cost tracking, context usage, cache health, and themeable colors. Native and tmux rendering modes.",
   "author": {
     "name": "teutooni"

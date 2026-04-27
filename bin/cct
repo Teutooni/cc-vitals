@@ -1,20 +1,41 @@
 #!/usr/bin/env bash
-# cct — launch Claude Code inside a fresh tmux session wired up for
-# cc-vitals' tmux mode. The slot id is propagated to:
-#   - the tmux session name (so render-tmux.py picks the right dump
-#     via `#{session_name}`)
-#   - the CC_VITALS_SLOT env var (so the ingest entrypoint writes to
-#     the matching dump file)
+# cct — launch a CC instance inside an isolated cc-vitals tmux session.
 #
-# Usage: cct [args passed to claude]
-#   cct                        # fresh session
+# What gets wired up:
+#   - tmux runs on its own socket (`-L cc-vitals`) loading the static
+#     plugin conf (`-f <plugin>/tmux/cc-vitals.tmux.conf`). That keeps
+#     cc-vitals tmux fully isolated from your personal ~/.tmux.conf so
+#     keybindings, status-bar settings, etc. don't conflict.
+#   - The session is named after the slot — render-tick uses
+#     `#{session_name}` as the routing key, so each tmux session shows
+#     telemetry for *that* CC, not whichever one happened to publish
+#     last.
+#   - `CC_VITALS_PLUGIN_ROOT` and `CC_VITALS_DUMP_DIR` are exported into
+#     tmux's server env so the conf's `#()` substitutions can find
+#     tick.py and the manifests at the right paths.
+#   - `CC_VITALS_SLOT` and `CC_VITALS_DUMP_DIR` are placed in the new
+#     session command's env via `env … <cmd>`, so the producer (CC's
+#     ingest hook) writes to the matching manifest file.
+#
+# Usage:
+#   cct                        # fresh tmux session running `claude`
 #   cct -r <session-id>        # resume a specific CC session
 #   cct --resume               # interactive picker
 #   cct --model opus           # any flag claude accepts
+#   cct --exec '<cmd>'         # run an arbitrary command inside the
+#                              # tmux session instead of `claude`. Useful
+#                              # for the container case, e.g.
+#                              # `cct --exec 'docker exec -it -e
+#                              #  CC_VITALS_SLOT=$CC_VITALS_SLOT -e
+#                              #  CC_VITALS_DUMP_DIR=$CC_VITALS_DUMP_DIR
+#                              #  myctr claude'`. The wrapper does NOT
+#                              # do shell expansion on your `--exec`
+#                              # string — it's passed to the inner shell
+#                              # verbatim.
 #
 # Override the slot explicitly with CC_VITALS_SLOT=<name> cct …
-# Default slot: <cwd-basename>-<short-rand> so concurrent sessions in
-# different repos don't collide.
+# Default slot: <cwd-basename>-<8-hex>, collision-safe up to thousands
+# of concurrent sessions in the same repo.
 set -euo pipefail
 
 if ! command -v tmux >/dev/null 2>&1; then
@@ -22,23 +43,87 @@ if ! command -v tmux >/dev/null 2>&1; then
   exit 127
 fi
 
-if ! command -v claude >/dev/null 2>&1; then
-  echo "cct: 'claude' is not on PATH." >&2
+# Plugin root: this script lives at <root>/bin/cct, so root is one up. We
+# resolve symlinks before computing the path so users can symlink cct from
+# ~/.local/bin/ (a recommended setup) without breaking lookup.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  link="$(readlink -- "$src")"
+  case "$link" in
+    /*) src="$link" ;;
+    *)  src="$(dirname -- "$src")/$link" ;;
+  esac
+done
+SCRIPT_DIR="$(cd -- "$(dirname -- "$src")" &> /dev/null && pwd)"
+PLUGIN_ROOT="$(dirname -- "$SCRIPT_DIR")"
+TMUX_CONF="$PLUGIN_ROOT/tmux/cc-vitals.tmux.conf"
+
+if [ ! -f "$TMUX_CONF" ]; then
+  echo "cct: missing $TMUX_CONF (is the plugin installed correctly?)" >&2
+  exit 1
+fi
+
+# Pull --exec out of the args; everything else goes to claude.
+exec_cmd=""
+claude_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --exec)
+      shift
+      [ $# -gt 0 ] || { echo "cct: --exec requires a command string" >&2; exit 2; }
+      exec_cmd="$1"
+      shift
+      ;;
+    --exec=*)
+      exec_cmd="${1#--exec=}"
+      shift
+      ;;
+    *)
+      claude_args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# When --exec isn't supplied, default to launching `claude` locally.
+# Validate `claude` is on PATH in that case so we fail fast with a clear
+# error rather than from inside tmux.
+if [ -z "$exec_cmd" ] && ! command -v claude >/dev/null 2>&1; then
+  echo "cct: 'claude' is not on PATH. Install Claude Code or pass --exec." >&2
   exit 127
 fi
 
+# Slot id: cwd basename + 8 hex chars. Collisions are astronomically
+# unlikely for the few-concurrent-sessions case this targets.
 slot="${CC_VITALS_SLOT:-}"
 if [ -z "$slot" ]; then
   base="$(basename -- "$PWD")"
   base="${base//[^A-Za-z0-9._-]/_}"
-  rand="$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom 2>/dev/null | head -c 5 || echo "$$" )"
+  rand="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 8 || printf '%08x' "$$" )"
   slot="${base}-${rand}"
 fi
 
-# Quote the claude command so flags survive the shell tmux spawns.
-cmd="claude"
-for a in "$@"; do
-  cmd+=" $(printf '%q' "$a")"
-done
+# Build the command tmux runs inside the new session. Quote args so they
+# survive the inner shell. CC_VITALS_SLOT and CC_VITALS_DUMP_DIR (if set)
+# are propagated into the session's env explicitly — that way the inner
+# shell, and any `docker exec`/etc. the user runs, can pick them up.
+if [ -n "$exec_cmd" ]; then
+  inner_cmd="$exec_cmd"
+else
+  inner_cmd="claude"
+  for a in "${claude_args[@]+"${claude_args[@]}"}"; do
+    inner_cmd+=" $(printf '%q' "$a")"
+  done
+fi
 
-exec env CC_VITALS_SLOT="$slot" tmux new-session -s "$slot" "$cmd"
+env_prelude="env CC_VITALS_SLOT=$(printf '%q' "$slot")"
+if [ -n "${CC_VITALS_DUMP_DIR:-}" ]; then
+  env_prelude+=" CC_VITALS_DUMP_DIR=$(printf '%q' "$CC_VITALS_DUMP_DIR")"
+fi
+
+echo "cct: slot=$slot" >&2
+
+exec env \
+    CC_VITALS_PLUGIN_ROOT="$PLUGIN_ROOT" \
+    ${CC_VITALS_DUMP_DIR:+CC_VITALS_DUMP_DIR="$CC_VITALS_DUMP_DIR"} \
+    tmux -L cc-vitals -f "$TMUX_CONF" new-session -s "$slot" "$env_prelude $inner_cmd"
