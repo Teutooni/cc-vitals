@@ -9,6 +9,18 @@ The standard Anthropic ratios are:
 - cache_write_1h = 200% of input
 """
 
+# Opus 4.5+ dropped to a new lower tier; Opus 4 and 4.1 remain on the legacy
+# high tier. `lookup` matches longest prefix first, so `claude-opus-4-7-...`
+# resolves to the new tier while bare `claude-opus-4-...` / `claude-opus-4-1-...`
+# fall through to the legacy entry.
+_OPUS_4_5_PLUS = {
+    'input':           5.0,
+    'output':         25.0,
+    'cache_read':      0.50,
+    'cache_write_5m':  6.25,
+    'cache_write_1h': 10.0,
+}
+
 PRICING = {
     'claude-opus-4': {
         'input':          15.0,
@@ -17,6 +29,9 @@ PRICING = {
         'cache_write_5m': 18.75,
         'cache_write_1h': 30.0,
     },
+    'claude-opus-4-5': _OPUS_4_5_PLUS,
+    'claude-opus-4-6': _OPUS_4_5_PLUS,
+    'claude-opus-4-7': _OPUS_4_5_PLUS,
     'claude-sonnet-4': {
         'input':           3.0,
         'output':         15.0,

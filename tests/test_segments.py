@@ -582,10 +582,10 @@ class RenderCacheAtRisk(unittest.TestCase):
         }
 
     def test_shown_on_cache_hit_turn(self):
-        # 100K cache_read on Opus 1h → ~$2.85.
+        # 100K cache_read on Opus 4.7 1h → ~$0.95 (delta = 9.5/M).
         data = self._data({'cache_read_input_tokens': 100_000})
         out = _strip_ansi(segments.render_cache(data, self._config(), self.theme))
-        self.assertIn('$2.85', out)
+        self.assertIn('$0.95', out)
 
     def test_shown_on_rebuild_turn_with_only_cache_creation(self):
         # Right after expiry: read=0, but the rebuild stuffed 100K into
@@ -596,7 +596,7 @@ class RenderCacheAtRisk(unittest.TestCase):
             'cache_creation_input_tokens': 100_000,
         })
         out = _strip_ansi(segments.render_cache(data, self._config(), self.theme))
-        self.assertIn('$2.85', out)
+        self.assertIn('$0.95', out)
 
     def test_uses_larger_bucket_when_both_present(self):
         # max(read, creation), not the sum — they describe the same prefix
@@ -606,8 +606,8 @@ class RenderCacheAtRisk(unittest.TestCase):
             'cache_creation_input_tokens': 20_000,
         })
         out = _strip_ansi(segments.render_cache(data, self._config(), self.theme))
-        self.assertIn('$2.85', out)
-        self.assertNotIn('$3.42', out)  # would be the sum (120K * 28.5/M)
+        self.assertIn('$0.95', out)
+        self.assertNotIn('$1.14', out)  # would be the sum (120K * 9.5/M)
 
 
 class RenderSegmentSwallowsErrors(unittest.TestCase):

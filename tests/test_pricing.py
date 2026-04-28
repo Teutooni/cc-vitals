@@ -5,10 +5,18 @@ import pricing
 
 
 class Lookup(unittest.TestCase):
-    def test_opus_match(self):
-        p = pricing.lookup('claude-opus-4-7')
+    def test_opus_legacy_match(self):
+        # Opus 4 / 4.1 stay on the high tier.
+        p = pricing.lookup('claude-opus-4-1')
         self.assertEqual(p['input'], 15.0)
         self.assertEqual(p['output'], 75.0)
+
+    def test_opus_4_5_plus_match(self):
+        # Opus 4.5 / 4.6 / 4.7 dropped to a new lower tier.
+        for mid in ('claude-opus-4-5', 'claude-opus-4-6', 'claude-opus-4-7'):
+            p = pricing.lookup(mid)
+            self.assertEqual(p['input'], 5.0, mid)
+            self.assertEqual(p['output'], 25.0, mid)
 
     def test_sonnet_match(self):
         p = pricing.lookup('claude-sonnet-4-6')
@@ -20,7 +28,7 @@ class Lookup(unittest.TestCase):
 
     def test_case_insensitive(self):
         p = pricing.lookup('CLAUDE-OPUS-4-7')
-        self.assertEqual(p['input'], 15.0)
+        self.assertEqual(p['input'], 5.0)
 
     def test_unknown_falls_back_to_sonnet(self):
         p = pricing.lookup('claude-mythical-9')
@@ -46,11 +54,16 @@ class AtRiskCost(unittest.TestCase):
         risk = pricing.at_risk_cost(1_000_000, 'claude-sonnet-4', ttl='1h')
         self.assertAlmostEqual(risk, 5.70, places=4)
 
-    def test_opus_1h_matches_anthropic_billing(self):
+    def test_opus_legacy_1h_matches_anthropic_billing(self):
         # Regression for #6: input price must NOT enter the formula.
-        # Opus: write_1h 30.0, read 1.5 → delta = 28.5 / 1M
-        risk = pricing.at_risk_cost(1_000_000, 'claude-opus-4-7', ttl='1h')
+        # Opus 4 / 4.1: write_1h 30.0, read 1.5 → delta = 28.5 / 1M
+        risk = pricing.at_risk_cost(1_000_000, 'claude-opus-4-1', ttl='1h')
         self.assertAlmostEqual(risk, 28.5, places=4)
+
+    def test_opus_4_7_1h_matches_anthropic_billing(self):
+        # Opus 4.7 (new tier): write_1h 10.0, read 0.50 → delta = 9.5 / 1M
+        risk = pricing.at_risk_cost(1_000_000, 'claude-opus-4-7', ttl='1h')
+        self.assertAlmostEqual(risk, 9.5, places=4)
 
     def test_unknown_ttl_treated_as_5m(self):
         same = pricing.at_risk_cost(500_000, 'claude-opus-4', ttl='5m')
